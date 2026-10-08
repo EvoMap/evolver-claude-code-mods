@@ -1,8 +1,91 @@
 # Architecture
 
-How the plugin is built on Claude Code function hooks, why the code is split the way it
-is, and the design decisions behind its behaviour. For maintainers; users want the
-[README](../README.md).
+Reference for the plugin's tools, settings and troubleshooting, then how it is built on
+Claude Code function hooks and the design decisions behind its behaviour.
+
+## Tools
+
+Served by the plugin itself and listed as `mcp__evolver-mods__<name>`:
+
+| Tool | Purpose |
+|---|---|
+| `evolver_status` | Proxy state: node id, pending counts, last Hub sync. |
+| `evolver_search_assets` | Search genes, capsules, evolution events or anti-genes by signal or text. |
+| `evolver_fetch_asset` | An asset's summary, strategy steps and validation commands. |
+| `evolver_asset_reuse_result` | Report a reuse as `success` / `failed` / `mismatched` / `stale` / `unsafe`. Overrides the automatic report and credits the author. |
+| `evolver_distill_conversation` | Turn verified work into a reusable asset; publishing is opt-in. |
+| `evolver_publish_asset` | Queue genes or capsules for Hub review. |
+| `evolver_poll` / `evolver_ack` | Read mailbox messages, then retire them by id. |
+
+## Skill and commands
+
+A **`capability-evolver` skill** (the reuse → verify → record loop) and the commands
+**`/evolver-mods:status`**, **`/evolver-mods:search`**, **`/evolver-mods:evolve`**,
+**`/evolver-mods:distill`**, plus **`/evolver-mods:run`**, **`/evolver-mods:review`**,
+**`/evolver-mods:solidify`** and **`/evolver-mods:sync`** when `@evomap/evolver` is installed.
+
+## Configuration
+
+Options, editable from the `/config` menu:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `proxy_port` | `$EVOMAP_PROXY_PORT`, then `19820` | Fallback Proxy port when `~/.evolver/settings.json` names no URL. |
+| `recall_enabled` | `true` | Recall one strategy per prompt. |
+| `recall_min_similarity` | `0.3` | Lowest similarity worth injecting, when the Proxy reports one. The relevance check applies either way. |
+| `recall_wait_ms` | `6000` | How long recall is awaited when the turn starts before it finishes in the background. |
+| `claim_nudge_enabled` | `false` | Show a toast with the pending node-claim link at most every 12 hours. |
+| `node_path` | `node` | The Node.js the sidecar runs on. |
+
+Environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `EVOMAP_PROXY_PORT` | `19820` | Fallback Proxy port. |
+| `MEMORY_GRAPH_PATH` | (auto) | Override the memory graph file. |
+| `EVOLVER_WORKSPACE_ID` | (auto) | Override the workspace id. |
+| `EVOMAP_HUB_URL` / `EVOMAP_API_KEY` / `EVOMAP_NODE_ID` | (unset) | Enable direct Hub recording. |
+
+## Troubleshooting
+
+- **Nothing seems to happen after a recall.** Recall decisions and background failures
+  are kept in the plugin's store: open `~/.claude/plugins/store/evolver-mods_*.json` and
+  look under `recalls` and `errors`.
+- **Recall injects nothing.** Hub text recall usually takes 3–11 s and sometimes fails
+  with a Hub 504, which the Proxy relays as HTTP 400. Requests time out after 8 s. A
+  strategy is also skipped when its relevance to your prompt is below 1.5. Each shared
+  English word counts 1 and each shared pair of Chinese characters counts 0.5, so a
+  short or off-topic prompt injects nothing by design.
+- **Every turn is recorded twice.** The command-hook `evolver` plugin is enabled too.
+- **Turn end says "nothing recorded (not a git workspace)".** The session's directory
+  is not a git repository.
+- **Installed, but no recall, signals or turn summary.** Check
+  `claude plugin list` shows it enabled and that Claude Code is 2.1.286 or newer. Hooks
+  modules of installed plugins are behind a Claude Code rollout flag
+  (`tengu_plugin_hooks_modules`); a `--plugin-dir` working copy always loads them.
+- **Validation passes but lists no hooks.** The `claude` on your `PATH` is older than
+  2.1.286. Use the one the desktop app bundles.
+
+## Development
+
+```bash
+npm ci
+npm test
+npx -p typescript tsc -p .
+claude plugin validate .
+```
+
+`tsconfig.json` reads `.claude/types/claude-code.d.ts`; write it with `/plugin-types`
+after each Claude Code update. `claude plugin validate` needs Claude Code 2.1.286 or newer;
+an older `claude` on `PATH` validates the plugin as having no hooks.
+
+A `--plugin-dir` folder is watched and reloads on save. A symlink into a watched folder
+loads once and is never reloaded, so for a session's `~/.claude/dev-mods/<session>/`
+folder sync a real copy instead:
+
+```bash
+npm run dev:sync -- ~/.claude/dev-mods/<session>/evolver-claude-mods
+```
 
 ## Layout
 
