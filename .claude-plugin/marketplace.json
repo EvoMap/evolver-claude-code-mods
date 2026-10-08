@@ -13,7 +13,7 @@
       "description": "Evolver on Claude Code function hooks: recalls one EvoMap strategy per prompt, tags edits with improvement signals, records every turn outcome, reports reuse feedback, and serves the EvoMap Proxy as native tools.",
       "author": { "name": "EvoMap" },
       "homepage": "https://evomap.ai",
-      "repository": "https://github.com/EvoMap/evolver-claude-mods-plugin",
+      "repository": "https://github.com/EvoMap/evolver-claude-code-mods",
       "license": "MIT",
       "category": "ai",
       "keywords": ["evolution", "agent-memory", "gep", "evomap", "mods"]

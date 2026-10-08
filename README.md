@@ -16,13 +16,12 @@ also adds `evolver_*` tools and `/evolver-mods:*` commands.
 In Claude Code:
 
 ```text
-/plugin marketplace add EvoMap/evolver-claude-mods-plugin
+/plugin marketplace add EvoMap/evolver-claude-code-mods
 /plugin install evolver-mods@evolver-mods
 ```
 
 Restart Claude Code afterwards. To update, run
-`claude plugin update evolver-mods@evolver-mods`. The repository is private for now, so
-adding the marketplace needs git access to `EvoMap`.
+`claude plugin update evolver-mods@evolver-mods`.
 
 Run one Evolver plugin, not two: if the older `evolver@evolver` plugin is installed,
 disable it so that each turn is recorded only once:
