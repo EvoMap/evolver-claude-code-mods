@@ -15,7 +15,7 @@ sessions.
 Four seams work without you invoking anything:
 
 - **Behind every prompt** (`turn.start`) — recalls from the EvoMap network with that
-  turn's own prompt, picks the best match that carries a four-to-eight-step strategy and
+  turn's own prompt, picks the best match that carries a strategy of at least four steps and
   scores as a real match rather than a topical one, and appends that one strategy to the
   turn, where you see it from your next step. Assets already injected this session are
   skipped, and a slow lookup lands when it returns rather than delaying the answer. Report what the reuse produced with

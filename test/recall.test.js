@@ -227,27 +227,33 @@ test('the Hub\'s own envelope shapes are all read', async () => {
   assert.deepEqual((await recallStrategy(results.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:abc']);
 });
 
-test('a strategy too thin or too long to reuse gives way to one that fits', async () => {
+test('a strategy too thin to reuse gives way to one that fits', async () => {
   const fits = ['Read the plan.', 'Apply it.', 'Check it.', 'Record it.'];
   const { proxyFetch, calls } = stubProxy({
     assets: [
       { ...ON_TOPIC, asset_id: 'sha256:thin', asset_type: 'Gene', similarity: 0.99, strategy: ['Try harder.', 'Ship it.', 'Hope.'] },
-      { ...ON_TOPIC, asset_id: 'sha256:transcript', asset_type: 'Capsule', similarity: 0.95, strategy: Array.from({ length: 21 }, (step, index) => `Pipeline step ${index}.`) },
       { ...ON_TOPIC, asset_id: 'sha256:fits', asset_type: 'Gene', similarity: 0.5, strategy: fits },
     ],
   });
 
   const { ids, text } = await recallStrategy(proxyFetch, 'add a retry to the uploader');
-  assert.equal(calls.length, 1, 'both rejections are read off the one answer');
+  assert.equal(calls.length, 1, 'the rejection is read off the one answer');
   assert.deepEqual(ids, ['sha256:fits']);
   assert.match(text, /^4\. Record it\.$/m);
-  assert.doesNotMatch(text, /Pipeline step|Try harder/);
+  assert.doesNotMatch(text, /Try harder/);
 });
 
-test('the bounds are inclusive at both ends', async () => {
+test('a long strategy is injected whole, with no upper bound on its steps', async () => {
+  const { proxyFetch } = stubProxy({
+    assets: [{ ...ON_TOPIC, asset_id: 'sha256:long', asset_type: 'Capsule', similarity: 0.95, strategy: Array.from({ length: 21 }, (step, index) => `Pipeline step ${index}.`) }],
+  });
+
+  const { ids, text } = await recallStrategy(proxyFetch, 'add a retry to the uploader');
+  assert.deepEqual(ids, ['sha256:long']);
+  assert.match(text, /^21\. Pipeline step 20\.$/m);
+});
+
+test('four steps is the least a strategy needs', async () => {
   const four = stubProxy({ assets: [{ ...ON_TOPIC, asset_id: 'sha256:four', asset_type: 'Gene', strategy: ['a.', 'b.', 'c.', 'd.'] }] });
   assert.deepEqual((await recallStrategy(four.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:four']);
-
-  const eight = stubProxy({ assets: [{ ...ON_TOPIC, asset_id: 'sha256:eight', asset_type: 'Gene', strategy: Array.from({ length: 8 }, (step, index) => `step ${index}.`) }] });
-  assert.deepEqual((await recallStrategy(eight.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:eight']);
 });
