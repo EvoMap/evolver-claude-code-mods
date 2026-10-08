@@ -88,8 +88,9 @@ Two engine rules shape this split:
 - A marketplace-installed copy loads `modules` as `evolver-mods@evolver-mods`, tier
   `user`, the same as a `--plugin-dir` copy; installed plugins' modules wait on the
   `tengu_plugin_hooks_modules` rollout flag first.
-- A marketplace install runs no `npm install`, so the sidecar falls back to the
-  `@evomap/evolver-core` inside the global `@evomap/evolver` CLI.
+- The marketplace installer runs an npm install in the plugin's folder, so
+  `@evomap/evolver-core` is there; the sidecar still falls back to the copy inside the
+  global `@evomap/evolver` CLI when it is not.
 
 ## Open questions
 

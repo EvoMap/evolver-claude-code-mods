@@ -81,8 +81,8 @@ In Claude Code:
 /plugin install evolver-mods@evolver-mods
 ```
 
-Restart Claude Code (or `/reload-plugins`). Nothing to clone and nothing to
-`npm install`. The repository is private for now, so adding the marketplace needs git
+Restart Claude Code (or `/reload-plugins`). Nothing to clone: the installer fetches the
+plugin and installs its dependencies itself. The repository is private for now, so adding the marketplace needs git
 access to `EvoMap` (your SSH key or `gh` login).
 
 **Run one Evolver plugin, not two.** If the command-hook
@@ -125,9 +125,9 @@ empty. If yours is older, the plugin shows a toast suggesting an upgrade.
 - **Claude Code ≥ 2.1.286.** The desktop app ships its own copy, so the `claude` on
   your `PATH` may be older.
 - **Node.js ≥ 22.13.** The hooks don't need it, but a small sidecar does: it takes
-  git snapshots and writes the memory graph and the local reuse ledger. The ledger is
-  written with the `@evomap/evolver-core` that ships inside the `@evomap/evolver` CLI,
-  so the plugin itself has no dependencies to install.
+  git snapshots and writes the memory graph and the local reuse ledger. The ledger uses
+  `@evomap/evolver-core`, which the installer puts beside the plugin; when it is
+  missing, the copy inside the global `@evomap/evolver` CLI is used instead.
 - **Git.** Outcomes are derived from the git diff of the session's directory. Outside a
   repository, only reuse reports are sent.
 - **The EvoMap Proxy**, for recall and the tools (see above). When it is down, the
