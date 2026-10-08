@@ -163,8 +163,10 @@ Two engine rules shape this split:
 - A symlinked plugin folder loads once and is never reloaded.
 - The engine writes `.claude-plugin/types/` into a mod's folder on every load; a sync that
   deletes it triggers a second reload, reported as "plugin.json changed".
-- `$.ui.status` was never seen drawn in the desktop app; `turn.complete`'s `{ text }` is
-  drawn there as a "Claude Code notice", without line breaks.
+- The desktop app draws `$.ui.toast` (top right, gone after its timeout), `$.ui.status`
+  (a line under the prompt) and an `AbovePrompt` band. `turn.complete`'s `{ text }` is
+  drawn as a "Claude Code notice" under the answer, without line breaks; the turn
+  summary stays there because it is a record of that turn, kept in the transcript.
 - Gating hooks (`prompt.submit`, `tool.call`) need a `.catch` from 2.1.293 on; its `next`
   is replay-safe, so a failure after `next` never runs the tool twice.
 
