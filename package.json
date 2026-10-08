@@ -13,7 +13,7 @@
     "validate": "claude plugin validate .",
     "dev:sync": "bash scripts/sync-dev-mod.sh"
   },
-  "dependencies": {
+  "devDependencies": {
     "@evomap/evolver-core": "2.0.38"
   }
 }

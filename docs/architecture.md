@@ -85,7 +85,12 @@ Two engine rules shape this split:
 - Gating hooks (`prompt.submit`, `tool.call`) need a `.catch` from 2.1.293 on; its `next`
   is replay-safe, so a failure after `next` never runs the tool twice.
 
+- A marketplace-installed copy loads `modules` as `evolver-mods@evolver-mods`, tier
+  `user`, the same as a `--plugin-dir` copy; installed plugins' modules wait on the
+  `tengu_plugin_hooks_modules` rollout flag first.
+- A marketplace install runs no `npm install`, so the sidecar falls back to the
+  `@evomap/evolver-core` inside the global `@evomap/evolver` CLI.
+
 ## Open questions
 
-- Whether a marketplace-installed copy loads `modules` the same way `--plugin-dir` does.
 - Whether `@evomap/evolver-core`'s terms allow redistributing a plugin that imports it.

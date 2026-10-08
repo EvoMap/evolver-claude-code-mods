@@ -1,0 +1,22 @@
+{
+  "name": "evolver-mods",
+  "description": "EvoMap marketplace for Evolver on Claude Code function hooks — per-prompt EvoMap strategy recall, edit signals, turn-outcome capture and reuse feedback, powered by the Genome Evolution Protocol (GEP).",
+  "owner": {
+    "name": "EvoMap",
+    "email": "team@evomap.ai",
+    "url": "https://evomap.ai"
+  },
+  "plugins": [
+    {
+      "name": "evolver-mods",
+      "source": "./",
+      "description": "Evolver on Claude Code function hooks: recalls one EvoMap strategy per prompt, tags edits with improvement signals, records every turn outcome, reports reuse feedback, and serves the EvoMap Proxy as native tools.",
+      "author": { "name": "EvoMap" },
+      "homepage": "https://evomap.ai",
+      "repository": "https://github.com/EvoMap/evolver-claude-mods-plugin",
+      "license": "MIT",
+      "category": "ai",
+      "keywords": ["evolution", "agent-memory", "gep", "evomap", "mods"]
+    }
+  ]
+}

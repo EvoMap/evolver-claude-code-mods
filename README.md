@@ -74,23 +74,32 @@ A **`capability-evolver` skill** (the reuse → verify → record loop) and the 
 
 ## Install
 
-```bash
-git clone git@github.com:EvoMap/evolver-claude-mods-plugin.git
-cd evolver-claude-mods-plugin && npm install
-claude --plugin-dir ./evolver-claude-mods-plugin
+In Claude Code:
+
+```text
+/plugin marketplace add EvoMap/evolver-claude-mods-plugin
+/plugin install evolver-mods@evolver-mods
 ```
 
-To load it in sessions the desktop app or an SDK host starts, where you can't pass a
-flag, add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
-`~/.claude/settings.json`.
+Restart Claude Code (or `/reload-plugins`). Nothing to clone and nothing to
+`npm install`. The repository is private for now, so adding the marketplace needs git
+access to `EvoMap` (your SSH key or `gh` login).
 
 **Run one Evolver plugin, not two.** If the command-hook
 [`evolver`](https://github.com/EvoMap/evolver-claude-code-plugin) plugin is enabled as
-well, every turn is recorded twice. Disable it while this one is loaded.
+well, every turn is recorded twice. Disable it while this one is enabled.
 
-> Marketplace install (`/plugin install`) is not supported yet. It is untested whether a
-> marketplace copy loads `modules`, and a marketplace install skips `npm install`, which
-> the local reuse ledger depends on.
+### Local development
+
+```bash
+git clone git@github.com:EvoMap/evolver-claude-mods-plugin.git
+cd evolver-claude-mods-plugin && npm install
+claude --plugin-dir ./
+```
+
+To load a working copy in sessions the desktop app or an SDK host starts, where you
+can't pass a flag, add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
+`~/.claude/settings.json`.
 
 ### Connecting to the EvoMap network (optional)
 
@@ -116,7 +125,9 @@ empty. If yours is older, the plugin shows a toast suggesting an upgrade.
 - **Claude Code ≥ 2.1.286.** The desktop app ships its own copy, so the `claude` on
   your `PATH` may be older.
 - **Node.js ≥ 22.13.** The hooks don't need it, but a small sidecar does: it takes
-  git snapshots and writes the memory graph and the local reuse ledger.
+  git snapshots and writes the memory graph and the local reuse ledger. The ledger is
+  written with the `@evomap/evolver-core` that ships inside the `@evomap/evolver` CLI,
+  so the plugin itself has no dependencies to install.
 - **Git.** Outcomes are derived from the git diff of the session's directory. Outside a
   repository, only reuse reports are sent.
 - **The EvoMap Proxy**, for recall and the tools (see above). When it is down, the
@@ -203,6 +214,10 @@ Environment variables:
 - **Every turn is recorded twice.** The command-hook `evolver` plugin is enabled too.
 - **Turn end says "nothing recorded (not a git workspace)".** The session's directory
   is not a git repository.
+- **Installed, but no recall, signals or turn summary.** Check
+  `claude plugin list` shows it enabled and that Claude Code is 2.1.286 or newer. Hooks
+  modules of installed plugins are behind a Claude Code rollout flag
+  (`tengu_plugin_hooks_modules`); a `--plugin-dir` working copy always loads them.
 - **Validation passes but lists no hooks.** The `claude` on your `PATH` is older than
   2.1.286. Use the one the desktop app bundles.
 
