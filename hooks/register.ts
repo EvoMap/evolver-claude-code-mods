@@ -79,11 +79,12 @@ function track($: EngineInterface, where: string, work: Promise<unknown>): void 
 }
 
 async function homeDir($: EngineInterface): Promise<string> {
-  return (await $.env.get('HOME')) ?? ''
+  return (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
 }
 
 async function proxyFetch($: EngineInterface, options: PluginOptions, method: string, path: string, body?: unknown): Promise<ProxyResult> {
-  const settingsText = await $.fs.read(`${await homeDir($)}/.evolver/settings.json`).catch(() => '')
+  const home = await homeDir($)
+  const settingsText = home ? await $.fs.read(`${home}/.evolver/settings.json`).catch(() => '') : ''
   const port = String(options.proxy_port || (await $.env.get('EVOMAP_PROXY_PORT')) || DEFAULT_PROXY_PORT)
   const { url: base, token } = proxySettingsFrom(typeof settingsText === 'string' ? settingsText : '', port)
   const headers: Record<string, string> = {}
@@ -160,7 +161,8 @@ async function showOnboardingNotices($: EngineInterface, options: PluginOptions)
   if (upgrade && (await noticeIsDue($, `evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS))) $.ui.toast(upgrade)
 
   if (options.claim_nudge_enabled !== true) return
-  const claimText = await $.fs.read(`${await homeDir($)}/.evomap/claim_url`).catch(() => '')
+  const home = await homeDir($)
+  const claimText = home ? await $.fs.read(`${home}/.evomap/claim_url`).catch(() => '') : ''
   const claimUrl = pendingClaimUrl(claimText)
   if (claimUrl && (await noticeIsDue($, `claim:${await sha256Hex(claimUrl)}`, CLAIM_NOTICE_TTL_MS))) {
     $.ui.toast(`Evolver node not connected to EvoMap yet — open ${claimUrl} while signed in to evomap.ai.`)
