@@ -1,6 +1,6 @@
 {
   "name": "@evomap/claude-code-evolver-mods",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Evolver for Claude Code as a function-hooks plugin (Mods): per-turn strategy recall, edit signals, turn-outcome capture, reuse feedback, and native EvoMap Proxy tools.",
   "type": "module",
