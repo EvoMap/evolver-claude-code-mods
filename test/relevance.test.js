@@ -51,9 +51,14 @@ test('two Han bigrams alone are not enough: a question about a notice is not a p
   assert.deepEqual(await recallStrategy(proxyFetch, prompt), { ids: [], text: '' });
 });
 
-test('a Latin word weighs one, a Han bigram half, and 1.5 is the bar', () => {
-  assert.equal(MIN_RELEVANCE, 1.5);
-  assert.equal(relevanceOf(['redis', '连接', '超时']), 2);
-  assert.equal(relevanceOf(['缓存', '命中', '中率']), 1.5);
-  assert.equal(relevanceOf(['提示', '注入']), 1);
+test('a Latin word weighs one, a Han bigram half, and 2 is the bar', () => {
+  assert.equal(MIN_RELEVANCE, 2);
+  assert.ok(relevanceOf(['redis', '连接', '超时']) >= MIN_RELEVANCE);
+  assert.ok(relevanceOf(['缓存', '命中', '中率']) < MIN_RELEVANCE, 'three bigrams alone were off-topic in every live recall');
+  assert.ok(relevanceOf(['提示', '注入']) < MIN_RELEVANCE);
+});
+
+test('the host\'s own name is not evidence: a toast question is not a Windows toast installer', () => {
+  const installer = { short_title: 'Install and configure Agent Toast on Windows so Claude Code hook events notify' };
+  assert.deepEqual(sharedTerms('先试一下 toast 在桌面端能不能显示 Claude Code', installer), ['toast']);
 });

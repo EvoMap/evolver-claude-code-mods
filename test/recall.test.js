@@ -211,6 +211,7 @@ test('a truncated CJK title gives way to the summary as well', async () => {
       asset_id: 'sha256:cut', asset_type: 'Gene', similarity: 0.9,
       short_title: '自动化小',
       nl_summary: '这个基因能自动帮你创作小红书笔记并一键发布。',
+      signals_match: ['小红书种草笔记'],
       strategy: ['先定选题。', '再写标题。', '再写正文。', '最后配图。'],
     }],
   });
@@ -256,4 +257,28 @@ test('a long strategy is injected whole, with no upper bound on its steps', asyn
 test('four steps is the least a strategy needs', async () => {
   const four = stubProxy({ assets: [{ ...ON_TOPIC, asset_id: 'sha256:four', asset_type: 'Gene', strategy: ['a.', 'b.', 'c.', 'd.'] }] });
   assert.deepEqual((await recallStrategy(four.proxyFetch, 'add a retry to the uploader')).ids, ['sha256:four']);
+});
+
+test('engine reminders, markup and links are not matched, and a bare reminder recalls nothing', async () => {
+  assert.equal(
+    promptTextOf('<scheduled-task name="triage">Triage the open Sentry issues</scheduled-task> see https://example.sentry.io/issues/?project=1'),
+    'Triage the open Sentry issues see',
+  );
+  assert.equal(promptTextOf('<system-reminder>\nThe session "Hub" sent a message.\n</system-reminder>'), '');
+  assert.equal(promptTextOf('<system-reminder>unterminated reminder text'), '');
+
+  const { proxyFetch, calls } = stubProxy({ assets: [ASSET] });
+  assert.deepEqual(await recallStrategy(proxyFetch, promptTextOf('<system-reminder>Linked sessions notice</system-reminder>')), { ids: [], text: '' });
+  assert.equal(calls.length, 0);
+});
+
+test('a strategy that would inject more than 4000 characters gives way to the next', async () => {
+  const long = Array.from({ length: 12 }, (step, index) => `${'x'.repeat(380)} step ${index}.`);
+  const { proxyFetch } = stubProxy({
+    assets: [
+      { ...ON_TOPIC, asset_id: 'sha256:transcript', asset_type: 'Capsule', similarity: 0.99, strategy: long },
+      { ...ON_TOPIC, asset_id: 'sha256:fits', asset_type: 'Gene', similarity: 0.5, strategy: ['Read it.', 'Apply it.', 'Check it.', 'Record it.'] },
+    ],
+  });
+  assert.deepEqual((await recallStrategy(proxyFetch, 'add a retry to the uploader')).ids, ['sha256:fits']);
 });

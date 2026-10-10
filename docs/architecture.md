@@ -53,9 +53,11 @@ Environment variables:
   look under `recalls` and `errors`.
 - **Recall injects nothing.** Hub text recall usually takes 3–11 s and sometimes fails
   with a Hub 504, which the Proxy relays as HTTP 400. Requests time out after 8 s. A
-  strategy is also skipped when its relevance to your prompt is below 1.5. Each shared
+  strategy is also skipped when its relevance to your prompt is below 2. Each shared
   English word counts 1 and each shared pair of Chinese characters counts 0.5, so a
-  short or off-topic prompt injects nothing by design.
+  short or off-topic prompt injects nothing by design. Engine reminders, markup and
+  links are removed from the prompt first, and a strategy longer than 4000 characters
+  is passed over.
 - **Every turn is recorded twice.** The command-hook `evolver` plugin is enabled too.
 - **Turn end says "nothing recorded (not a git workspace)".** The session's directory
   is not a git repository.
@@ -126,9 +128,18 @@ Two engine rules shape this split:
 - **Relevance gate.** The local Proxy's text recall reports no similarity, and the Hub's
   raw order put off-topic genes behind short follow-ups. A candidate must share terms
   with the prompt through its title, summary and `signals_match`: Latin words are
-  stemmed and weigh 1, Han bigrams weigh 0.5, generic task words nothing, and 1.5
-  passes. Measured on live recalls, off-topic hits scored at most 1 and on-topic ones
-  1.5 or more; the samples are in `test/fixtures/recall-live.json`.
+  stemmed and weigh 1, Han bigrams weigh 0.5, generic task words and the host's own
+  name (`claude`, `code`) nothing, and 2 passes. Measured on live recalls, every hit
+  that scored 1.5 was off-topic and on-topic ones scored 2 or more; the samples are in
+  `test/fixtures/recall-live.json`. Before matching, `<system-reminder>` blocks, markup
+  and links are stripped from the prompt, so a session notification recalls nothing.
+  A strategy that would inject more than 4000 characters is passed over. Two off-topic
+  hits still score exactly 2 (meta questions sharing words like `replay` and `review`),
+  the same as an on-topic Redis fix, so the gate alone cannot separate them.
+- **Estimated savings.** The turn summary claims a saving only when the turn's last
+  check passed, and never more than the fresh tokens (input, cache writes, output) the
+  turn spent: evolver-core's estimator prices deriving a whole approach from scratch,
+  which put ~72k against single questions that cost 5k.
 - **Strategy timing.** `turn.start` holds no request, so a strategy reaches the model
   from the turn's next step and a turn answered in one step never sees it. Attaching
   it as `prompt.submit` context would reach the first request but holds the person's

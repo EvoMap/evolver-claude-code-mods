@@ -30,7 +30,7 @@ test('every recall reports exactly one decision', async () => {
 });
 
 test('a recall decision reads as one short status phrase', () => {
-  assert.equal(recallStatusOf({ outcome: 'skipped', recalled: 5, eligible: 0, bestRelevance: 1 }), 'recall: 5 hits, best relevance 1 (needs 1.5), none injected');
+  assert.equal(recallStatusOf({ outcome: 'skipped', recalled: 5, eligible: 0, bestRelevance: 1 }), 'recall: 5 hits, best relevance 1 (needs 2), none injected');
   assert.equal(recallStatusOf({ outcome: 'skipped', recalled: 0, eligible: 0, bestRelevance: 0 }), 'recall: no assets came back');
   assert.equal(recallStatusOf({ outcome: 'injected', recalled: 5, name: 'Redis pool', relevance: 2 }), 'recall: injected "Redis pool" (5 hits, relevance 2)');
   assert.equal(recallStatusOf({ outcome: 'waiting', waitedMs: 6000 }), 'recall: still waiting after 6s, lands next step');
