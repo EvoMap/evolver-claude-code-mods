@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { isVerificationCommand, verificationFailed } from '../lib/verification.js';
+import { checkCommandOf, isVerificationCommand, verificationFailed } from '../lib/verification.js';
 
 test('test, build, lint and type-check runs are verifications; other commands are not', () => {
   for (const command of ['npm test', 'pnpm run build', 'yarn lint', 'node --test test/*.test.js', 'npx vitest run', 'go test ./...',
@@ -27,4 +27,12 @@ test('a passing summary that counts zero failures passes', () => {
   assert.equal(verificationFailed({ text: 'Tests: 0 failed, 12 passed' }), false);
   assert.equal(verificationFailed({ text: 'failures: 0\nerrors: 0' }), false);
   assert.equal(verificationFailed({ text: '✔ Validation passed' }), false);
+});
+
+test('a check run through Bash or PowerShell counts, a background one or another tool does not', () => {
+  assert.equal(checkCommandOf({ tool: 'Bash', command: 'npm test' }), 'npm test');
+  assert.equal(checkCommandOf({ tool: 'PowerShell', command: 'npm run build' }), 'npm run build');
+  assert.equal(checkCommandOf({ tool: 'Bash', command: 'npm test', run_in_background: true }), null);
+  assert.equal(checkCommandOf({ tool: 'Bash', command: 'git status' }), null);
+  assert.equal(checkCommandOf({ tool: 'Read', command: 'npm test' }), null);
 });

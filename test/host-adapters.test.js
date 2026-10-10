@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { editedContent, editedPath } from '../lib/edited-content.js';
-import { isOlderThan, noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf } from '../lib/onboarding.js';
+import { isOlderThan, noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js';
 import { proxyResultOf, proxySettingsFrom } from '../lib/proxy-response.js';
 import { outcomeOfReason } from '../lib/turn-outcomes.js';
 
@@ -65,4 +65,9 @@ test('only prompts the person sent are recalled for', async () => {
     assert.equal(isPersonPrompt({ kind }), false, kind);
   }
   assert.equal(isPersonPrompt(undefined), true);
+});
+
+test('the evolver version probe goes through cmd.exe on Windows, where the CLI is a .cmd shim', () => {
+  assert.deepEqual(versionProbeArgv(false), ['evolver', '--version']);
+  assert.deepEqual(versionProbeArgv(true), ['cmd.exe', '/d', '/s', '/c', 'evolver --version']);
 });
