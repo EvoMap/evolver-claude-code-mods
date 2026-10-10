@@ -48,7 +48,7 @@ test('a failed check counts no saving', () => {
 test('a turn no check vouched for counts no saving', () => {
   assert.equal(
     turnSummaryOf({ reusedNames: ['Redis pool'], changedLines: 0, usage: USAGE }),
-    '○ Goal counted as reached (no check ran) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
+    '○ Unverified (no check ran, reuse not reported) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
   );
 });
 

@@ -9,6 +9,7 @@ import {
   withInjected,
   withModelReport,
   withReported,
+  withUnverified,
 } from '../lib/injected-ledger.js'
 import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
 import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
@@ -219,6 +220,10 @@ async function correctEarlierVerdicts($: EngineInterface, options: PluginOptions
 async function reportTurnReuse($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, lastCheck: LastCheck | undefined): Promise<void> {
   const status = reuseStatusOf(lastCheck)
   const due = unreportedAssets(await readLedger($, sessionId)).filter((entry: { turn: number }) => entry.turn <= turn)
+  if (status === null) {
+    await updateLedger($, sessionId, (ledger, now) => due.reduce((next: Ledger, entry: { assetId: string }) => withUnverified(next, entry.assetId, now), ledger))
+    return
+  }
   for (const injectedTurn of new Set(due.map((entry: { turn: number }) => entry.turn))) {
     const assetIds = due.filter((entry: { turn: number }) => entry.turn === injectedTurn).map((entry: { assetId: string }) => entry.assetId)
     const reported = await reportInjectedReuse(reuseLedgers($, options), { assetIds, lastCheck, turn: injectedTurn, sessionId })

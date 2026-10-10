@@ -29,8 +29,9 @@ Four seams work without you invoking anything:
   classifies the outcome from how the turn ended, and appends it to the memory graph with
   session/workspace provenance. Failed turns are retained; an answered turn with no new
   work records nothing, and unchanged work is not recorded twice. Every strategy injected
-  that turn is reported to the Hub as a success unless the turn's last test, build, lint or
-  type-check run failed, marked automatic.
+  that turn is reported to the Hub, marked automatic, as a success when the turn's last
+  test, build, lint or type-check passed and a failure when it failed. A turn that ran no
+  check reports nothing: report it yourself with `evolver_asset_reuse_result`.
 - **The next prompt** — when it plainly says the last answer did not hold, verdicts already
   sent for this session are revised to `failed`, each asset at most once.
 
