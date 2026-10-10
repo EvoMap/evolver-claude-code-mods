@@ -1,7 +1,7 @@
 {
   "name": "evolver-mods",
   "displayName": "Evolver (Mods) — Self-Evolving Agent Memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Evolver for Claude Code as function hooks: recalls one EvoMap strategy per prompt, tags edits with improvement signals, records every turn outcome, reports reuse feedback, and serves the EvoMap Proxy as native tools.",
   "author": {
     "name": "EvoMap",
