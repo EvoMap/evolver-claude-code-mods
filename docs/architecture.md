@@ -89,6 +89,10 @@ folder sync a real copy instead:
 npm run dev:sync -- ~/.claude/dev-mods/<session>/evolver-claude-mods
 ```
 
+Installed copies update by version: bump `version` in `.claude-plugin/plugin.json`
+(and `package.json`) with every change meant to reach them, or
+`claude plugin update` reports the old version as the latest.
+
 ## Layout
 
 ```

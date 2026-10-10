@@ -20,8 +20,12 @@ In Claude Code:
 /plugin install evolver-mods@evolver-mods
 ```
 
-Restart Claude Code afterwards. To update, run
-`claude plugin update evolver-mods@evolver-mods`.
+Restart Claude Code afterwards. To update, refresh the marketplace first, then the
+plugin, and restart:
+
+```bash
+claude plugin marketplace update evolver-mods && claude plugin update evolver-mods@evolver-mods
+```
 
 Run one Evolver plugin, not two: if the older `evolver@evolver` plugin is installed,
 disable it so that each turn is recorded only once:
