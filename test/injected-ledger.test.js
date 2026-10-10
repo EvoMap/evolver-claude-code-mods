@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { correctableAssets, unreportedAssets, withCorrected, withInjected, withModelReport, withReported } from '../lib/injected-ledger.js';
+import { UNVERIFIED, correctableAssets, unreportedAssets, withCorrected, withInjected, withModelReport, withReported, withUnverified } from '../lib/injected-ledger.js';
 
 const NOW = 1_000_000_000_000;
 const WEEK = 7 * 24 * 60 * 60 * 1000;
@@ -52,4 +52,19 @@ test('a model report on an unreported asset is its first verdict', () => {
   const ledger = withModelReport(withInjected({}, 'sha256:b', 2, NOW), 'sha256:b', 'failed', NOW + 1);
   assert.equal(ledger['sha256:b'].outcome, 'failed');
   assert.deepEqual(unreportedAssets(ledger), []);
+});
+
+test('an unverified reuse is closed: no later turn reports it and no correction revises it', () => {
+  const ledger = withUnverified(withInjected({}, 'sha256:u', 4, NOW), 'sha256:u', NOW + 1);
+  assert.equal(ledger['sha256:u'].outcome, UNVERIFIED);
+  assert.deepEqual(unreportedAssets(ledger), []);
+  assert.deepEqual(correctableAssets(ledger), []);
+});
+
+test('the model\'s own report on an unverified reuse is its first verdict', () => {
+  let ledger = withUnverified(withInjected({}, 'sha256:u', 4, NOW), 'sha256:u', NOW + 1);
+  ledger = withModelReport(ledger, 'sha256:u', 'success', NOW + 2);
+  assert.equal(ledger['sha256:u'].outcome, 'success');
+  assert.equal(ledger['sha256:u'].corrected, undefined);
+  assert.deepEqual(correctableAssets(ledger), [{ assetId: 'sha256:u', turn: 4 }]);
 });

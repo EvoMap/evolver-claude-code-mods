@@ -149,9 +149,11 @@ Two engine rules shape this split:
   from the turn's next step and a turn answered in one step never sees it. Attaching
   it as `prompt.submit` context would reach the first request but holds the person's
   message off screen until recall returns (3.6–5.7 s measured); that trade was declined.
-- **Reuse verdict.** An automatic report is `success` unless the turn's last test,
-  build, lint or type-check failed: how a turn ended says little about whether a
-  strategy helped. A model's own `evolver_asset_reuse_result` over an automatic verdict
+- **Reuse verdict.** An automatic report follows the turn's last test, build, lint or
+  type-check: `success` when it passed, `failed` when it failed. A turn that ran no
+  check sends nothing and closes the reuse locally as `unverified`; reporting those as
+  successes credited off-topic strategies every hour a scheduled task ran. How a turn
+  ended says little about whether a strategy helped. A model's own `evolver_asset_reuse_result` over an automatic verdict
   stands as its correction, so a later correction prompt does not count it twice. The
   memory-graph outcome follows how the turn ended, in Claude Code's own terms: `answer`
   is a success, `aborted`, `refusal` and `error` are failures.

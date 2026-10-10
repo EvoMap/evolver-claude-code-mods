@@ -25,6 +25,7 @@ test('an automatic report names the asset, a per-turn task id, and that it is un
   const sinks = ledgers();
   const reported = await reportInjectedReuse(sinks, {
     assetIds: ['sha256:a'],
+    lastCheck: { command: 'npm test', failed: false },
     turn: 4,
     sessionId: 's1',
   });
@@ -64,8 +65,8 @@ test('no assets sends nothing', async () => {
   assert.equal(sinks.posts.length, 0);
 });
 
-test('a reuse is a success unless the turn\'s last verification failed', async () => {
-  assert.equal(reuseStatusOf(undefined), 'success');
+test('a reuse is judged only by a check the turn ran', async () => {
+  assert.equal(reuseStatusOf(undefined), null);
   assert.equal(reuseStatusOf({ command: 'npm test', failed: false }), 'success');
   assert.equal(reuseStatusOf({ command: 'npm test', failed: true }), 'failed');
 
@@ -74,4 +75,11 @@ test('a reuse is a success unless the turn\'s last verification failed', async (
   assert.equal(sinks.posts[0].body.outcome, 'failed');
   assert.match(sinks.posts[0].body.reason, /last verification failed \(`npm test`\)/);
   assert.equal(sinks.locals[0].outcome, 'failed');
+});
+
+test('a turn that ran no check reports nothing to either ledger', async () => {
+  const sinks = ledgers();
+  assert.deepEqual(await reportInjectedReuse(sinks, { assetIds: ['sha256:a'], turn: 3, sessionId: 's' }), []);
+  assert.equal(sinks.posts.length, 0);
+  assert.equal(sinks.locals.length, 0);
 });
