@@ -10,7 +10,7 @@ import {
   withModelReport,
   withReported,
 } from '../lib/injected-ledger.js'
-import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf } from '../lib/onboarding.js'
+import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
 import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
 import { DEFAULT_PROXY_PORT, proxyResultOf, proxySettingsFrom, timedOutResult, unreachableResult } from '../lib/proxy-response.js'
 import { reportInjectedReuse, reportReuseCorrection, reuseStatusOf } from '../lib/reuse.js'
@@ -19,7 +19,7 @@ import { captureStatusOf, recallStatusOf, statusLineOf } from '../lib/status-lin
 import { turnSummaryOf } from '../lib/turn-summary.js'
 import { EVOLVER_TOOLS, REUSE_RESULT_TOOL, proxyRequestFor, renderToolResult, toolArguments, toolNamed } from '../lib/tools.js'
 import { outcomeOfReason } from '../lib/turn-outcomes.js'
-import { isVerificationCommand, verificationFailed } from '../lib/verification.js'
+import { checkCommandOf, verificationFailed } from '../lib/verification.js'
 
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
 type Ledger = Record<string, { turn: number; injectedAt: number; outcome?: string; corrected?: boolean }>
@@ -79,11 +79,12 @@ function track($: EngineInterface, where: string, work: Promise<unknown>): void 
 }
 
 async function homeDir($: EngineInterface): Promise<string> {
-  return (await $.env.get('HOME')) ?? ''
+  return (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
 }
 
 async function proxyFetch($: EngineInterface, options: PluginOptions, method: string, path: string, body?: unknown): Promise<ProxyResult> {
-  const settingsText = await $.fs.read(`${await homeDir($)}/.evolver/settings.json`).catch(() => '')
+  const home = await homeDir($)
+  const settingsText = home ? await $.fs.read(`${home}/.evolver/settings.json`).catch(() => '') : ''
   const port = String(options.proxy_port || (await $.env.get('EVOMAP_PROXY_PORT')) || DEFAULT_PROXY_PORT)
   const { url: base, token } = proxySettingsFrom(typeof settingsText === 'string' ? settingsText : '', port)
   const headers: Record<string, string> = {}
@@ -154,13 +155,15 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 async function showOnboardingNotices($: EngineInterface, options: PluginOptions): Promise<void> {
-  const probe = await $.process.run(['evolver', '--version'], { timeoutMs: 5_000 }).catch(() => null)
+  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
+  const probe = await $.process.run(versionProbeArgv(isWindows), { timeoutMs: 5_000 }).catch(() => null)
   const version = probe && probe.exitCode === 0 ? versionOf(probe.stdout) : null
   const upgrade = upgradeNoticeText(version)
   if (upgrade && (await noticeIsDue($, `evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS))) $.ui.toast(upgrade)
 
   if (options.claim_nudge_enabled !== true) return
-  const claimText = await $.fs.read(`${await homeDir($)}/.evomap/claim_url`).catch(() => '')
+  const home = await homeDir($)
+  const claimText = home ? await $.fs.read(`${home}/.evomap/claim_url`).catch(() => '') : ''
   const claimUrl = pendingClaimUrl(claimText)
   if (claimUrl && (await noticeIsDue($, `claim:${await sha256Hex(claimUrl)}`, CLAIM_NOTICE_TTL_MS))) {
     $.ui.toast(`Evolver node not connected to EvoMap yet — open ${claimUrl} while signed in to evomap.ai.`)
@@ -291,9 +294,8 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     if (e.tool.startsWith(TOOL_PREFIX)) return serveTool($, options, e.tool.slice(TOOL_PREFIX.length), e as Record<string, unknown>)
     const ran = await next(e)
-    if (e.tool === 'Bash' && ran.deny === undefined && !e.run_in_background && isVerificationCommand(e.command)) {
-      turnRecord.lastCheck = { command: e.command.slice(0, 200), failed: verificationFailed(ran) }
-    }
+    const checkCommand = ran.deny === undefined ? checkCommandOf(e) : null
+    if (checkCommand) turnRecord.lastCheck = { command: checkCommand.slice(0, 200), failed: verificationFailed(ran) }
     if (!EDIT_TOOL_NAMES.includes(e.tool) || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
     const notice = signalNotice(e as Record<string, unknown>)

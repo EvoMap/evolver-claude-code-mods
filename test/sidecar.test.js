@@ -12,7 +12,7 @@ function sidecar(command, request, home) {
   const ran = spawnSync(process.execPath, [SIDECAR, command], {
     input: JSON.stringify(request),
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, EVOLVER_HOOK_LOG_DIR: join(home, 'logs'), MEMORY_GRAPH_PATH: join(home, 'graph.jsonl') },
+    env: { ...process.env, HOME: home, USERPROFILE: home, EVOLVER_HOOK_LOG_DIR: join(home, 'logs'), MEMORY_GRAPH_PATH: join(home, 'graph.jsonl') },
   });
   return { status: ran.status, answer: JSON.parse(ran.stdout) };
 }

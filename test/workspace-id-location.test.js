@@ -14,16 +14,22 @@ function gitRepo() {
   return directory;
 }
 
+// os.homedir() reads HOME on POSIX and USERPROFILE on Windows, so both point
+// at the test's home or a Windows run would write into the real profile.
+const HOME_VARIABLES = ['HOME', 'USERPROFILE'];
+
 function withHome(home, run) {
-  const previousHome = process.env.HOME;
+  const previous = Object.fromEntries(HOME_VARIABLES.map((name) => [name, process.env[name]]));
   const previousId = process.env.EVOLVER_WORKSPACE_ID;
   delete process.env.EVOLVER_WORKSPACE_ID;
-  process.env.HOME = home;
+  for (const name of HOME_VARIABLES) process.env[name] = home;
   try {
     return run();
   } finally {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
+    for (const name of HOME_VARIABLES) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
     if (previousId !== undefined) process.env.EVOLVER_WORKSPACE_ID = previousId;
   }
 }

@@ -41,6 +41,7 @@ Environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `HOME` / `USERPROFILE` | (unset) | User directory for Proxy settings and claim reminders. A non-empty `HOME` wins; otherwise `USERPROFILE` is used on Windows. If both are missing, no user credential or claim file is read. |
 | `EVOMAP_PROXY_PORT` | `19820` | Fallback Proxy port. |
 | `MEMORY_GRAPH_PATH` | (auto) | Override the memory graph file. |
 | `EVOLVER_WORKSPACE_ID` | (auto) | Override the workspace id. |
