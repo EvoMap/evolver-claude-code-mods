@@ -23,24 +23,39 @@ test('a turn that reused nothing shows nothing', () => {
   assert.equal(turnSummaryOf({ reusedNames: [], lastCheck: { command: 'npm test', failed: false } }), null);
 });
 
-test('a reached goal shows the check it rests on and the estimated saving', () => {
+test('a passing check vouches for a saving, never above what the turn spent', () => {
   assert.equal(
     turnSummaryOf({ reusedNames: ['Redis connection pool tuning'], lastCheck: { command: 'npm test', failed: false }, changedLines: 30, usage: USAGE }),
-    '✓ Goal reached (last check passed: npm test) · reused EvoMap strategy "Redis connection pool tuning" · est. ~58k tokens saved (≈$0.52) · this turn used 6k fresh tokens',
+    '✓ Goal reached (last check passed: npm test) · reused EvoMap strategy "Redis connection pool tuning" · est. ~6k tokens saved (≈$0.05) · this turn used 6k fresh tokens',
   );
 });
 
-test('a missed goal counts no saving', () => {
+test('a saving under the turn\'s own spend is the estimator\'s figure', () => {
+  const heavy = { input_tokens: 90_000, output_tokens: 10_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  assert.match(
+    turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: false }, changedLines: 30, usage: heavy }),
+    /est\. ~58k tokens saved \(≈\$0\.52\) · this turn used 100k fresh tokens$/,
+  );
+});
+
+test('a failed check counts no saving', () => {
   assert.equal(
     turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: true }, changedLines: 30, usage: USAGE }),
-    '✗ Goal not reached (last check failed: npm test) · reused EvoMap strategy "Redis pool" · no savings counted · this turn used 6k fresh tokens',
+    '✗ Goal not reached (last check failed: npm test) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
   );
 });
 
-test('no check is counted as reached, and missing usage is left out', () => {
+test('a turn no check vouched for counts no saving', () => {
   assert.equal(
-    turnSummaryOf({ reusedNames: ['Redis pool'], changedLines: 0 }),
-    '○ Goal counted as reached (no check ran) · reused EvoMap strategy "Redis pool" · est. ~72k tokens saved (≈$0.65)',
+    turnSummaryOf({ reusedNames: ['Redis pool'], changedLines: 0, usage: USAGE }),
+    '○ Goal counted as reached (no check ran) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
+  );
+});
+
+test('a turn whose usage is unknown counts no saving and states no usage', () => {
+  assert.equal(
+    turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: false }, changedLines: 10 }),
+    '✓ Goal reached (last check passed: npm test) · reused EvoMap strategy "Redis pool" · no saving counted',
   );
 });
 
