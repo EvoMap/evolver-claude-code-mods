@@ -282,3 +282,20 @@ test('a strategy that would inject more than 4000 characters gives way to the ne
   });
   assert.deepEqual((await recallStrategy(proxyFetch, 'add a retry to the uploader')).ids, ['sha256:fits']);
 });
+
+test('the serve token the Hub issued with a recalled asset is kept for its report', async () => {
+  const { proxyFetch } = stubProxy({ assets: [{ ...ASSET, ...ON_TOPIC, serve_token: '1791800000.1.3.ab12' }] });
+  const match = await recallStrategy(proxyFetch, 'add a retry to the uploader');
+  assert.equal(match.serveToken, '1791800000.1.3.ab12');
+
+  const untokened = stubProxy({ assets: [{ ...ASSET, ...ON_TOPIC }] });
+  assert.equal('serveToken' in (await recallStrategy(untokened.proxyFetch, 'add a retry to the uploader')), false);
+});
+
+test('keys and tokens are stripped from the prompt before it leaves for recall', async () => {
+  const { proxyFetch, calls } = stubProxy({ assets: [] });
+  const prompt = promptTextOf('upload retry fails with ANTHROPIC_API_KEY=sk-ant-api03-abcdefghijklmnopqrstuv and ghp_abcdefghijklmnopqrstuvwxyz0123');
+  await recallStrategy(proxyFetch, prompt);
+  assert.doesNotMatch(calls[0].body.text, /sk-ant|ghp_/);
+  assert.match(calls[0].body.text, /upload retry fails with/);
+});

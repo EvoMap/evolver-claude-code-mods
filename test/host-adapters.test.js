@@ -15,9 +15,10 @@ test('edited content is read from every Claude Code edit tool shape', () => {
 });
 
 test('each way a Claude Code turn can end has an outcome, and nothing else does', () => {
-  assert.deepEqual(outcomeOfReason('answer'), { status: 'success', score: 0.8 });
-  assert.deepEqual(outcomeOfReason('refusal'), { status: 'failed', score: 0.3 });
-  assert.deepEqual(outcomeOfReason('error'), { status: 'failed', score: 0.2 });
+  assert.equal(outcomeOfReason('answer'), 'success');
+  assert.equal(outcomeOfReason('aborted'), 'failed');
+  assert.equal(outcomeOfReason('refusal'), 'failed');
+  assert.equal(outcomeOfReason('error'), 'failed');
   assert.equal(outcomeOfReason('completed'), null);
 });
 

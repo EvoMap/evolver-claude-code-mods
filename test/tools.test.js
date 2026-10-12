@@ -78,3 +78,13 @@ test('engine keys are stripped and unknown arguments rejected before the Proxy',
   assert.equal(proxyRequestFor(toolNamed('evolver_poll'), args).body.limit, 3);
   assert.throws(() => proxyRequestFor(toolNamed('evolver_search_assets'), { qurey: 'typo' }), /Unknown argument: qurey/);
 });
+
+test('a reuse the model reports itself carries L5 evidence and the serve token its recall issued', () => {
+  const { body } = toolNamed('evolver_asset_reuse_result').request({ asset_id: 'sha256:abc', outcome: 'success' }, { serveToken: '1791800000.1.3.ab12' });
+  assert.equal(body.serve_token, '1791800000.1.3.ab12');
+  assert.deepEqual(body.evidence, { tier: 'L5', applied: 'used', stage: 'immediate' });
+
+  const mismatched = request('evolver_asset_reuse_result', { asset_id: 'sha256:abc', outcome: 'mismatched' }).body;
+  assert.equal('serve_token' in mismatched, false);
+  assert.equal(mismatched.evidence.applied, 'unused');
+});

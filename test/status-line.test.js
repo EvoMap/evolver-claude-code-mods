@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { recallStrategy } from '../lib/recall.js';
-import { captureStatusOf, recallStatusOf, statusLineOf } from '../lib/status-line.js';
+import { recallStatusOf, statusLineOf } from '../lib/status-line.js';
 
 const STRATEGY = ['Pool the connections.', 'Bound the wait.', 'Retry with backoff.', 'Alert on exhaustion.'];
 
@@ -38,8 +38,8 @@ test('a recall decision reads as one short status phrase', () => {
 
 test('the status line joins what is known and clears when nothing is', () => {
   assert.equal(
-    statusLineOf([recallStatusOf({ outcome: 'short' }), captureStatusOf('[Evolution] Turn outcome recorded to local memory: Turn ended with answer: 1 files changed')]),
-    'evolver · recall: prompt too short · capture: local memory: Turn ended with answer: 1 files changed',
+    statusLineOf([recallStatusOf({ outcome: 'short' })]),
+    'evolver · recall: prompt too short',
   );
-  assert.equal(statusLineOf([null, captureStatusOf(null)]), undefined);
+  assert.equal(statusLineOf([null]), undefined);
 });

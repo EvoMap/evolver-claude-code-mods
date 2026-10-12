@@ -13,8 +13,8 @@ Take a deliberate evolution step for the current task.
 2. **Reflect.** Given the current diff and task state, say in one or two lines: what
    worked, what didn't, and what the durable lesson is.
 
-3. **Record.** Outcomes are captured automatically at every turn end, so nothing is needed
-   for the local graph. If the lesson is worth sharing, distill it with
+3. **Record.** The reuse of an injected strategy is reported automatically at every turn
+   end. If the lesson is worth sharing, distill it with
    `evolver_distill_conversation` (see `/evolver-mods:distill`). To run the full engine now,
    use `/evolver-mods:run`.
 
