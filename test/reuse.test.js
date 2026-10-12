@@ -140,3 +140,15 @@ test('evidence-bearing reports are recorded locally once; tier none never is', a
   assert.deepEqual(sinks.locals, [{ assetId: 'sha256:a', outcome: 'failed', sessionId: 's1' }]);
   assert.equal(sinks.posts.length, 4);
 });
+
+test('a report the Hub already holds counts as delivered and is not retried', async () => {
+  const sinks = ledgers({ hub: { ok: true, data: { recorded: false, reason: 'duplicate_report' } } });
+  const outbox = await deliverPending(sinks, withQueued({}, [{ report: immediate(), sessionId: 's1' }], NOW), NOW);
+  assert.equal(Object.values(outbox)[0].sentAt, NOW);
+});
+
+test('a report the Hub judged ineligible is still delivered', async () => {
+  const sinks = ledgers({ hub: { ok: true, data: { recorded: true, eligible: false, reason: 'no_delivery_proof' } } });
+  const outbox = await deliverPending(sinks, withQueued({}, [{ report: immediate(), sessionId: 's1' }], NOW), NOW);
+  assert.equal(Object.values(outbox)[0].sentAt, NOW);
+});
