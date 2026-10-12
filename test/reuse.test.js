@@ -10,7 +10,7 @@ import {
   retentionReportOf,
 } from '../lib/reuse.js';
 
-const ASSET = { assetId: 'sha256:a', serveToken: '1791800000.1.3.ab12', strategyText: '' };
+const ASSET = { assetId: 'sha256:a', strategyText: '' };
 const NOW = 1_800_000_000_000;
 
 function ledgers({ hub = { ok: true, data: {} }, local = true } = {}) {
@@ -40,7 +40,6 @@ test('a turn that ran no check still reports its injection, as tier none', () =>
     outcome: 'success',
     task_id: 'claude-code:s1:4',
     reason: 'Injected by Evolver into Claude Code turn 4; applied: used; no check ran.',
-    serve_token: '1791800000.1.3.ab12',
     evidence: { tier: 'none', applied: 'used', aborted: false, stage: 'immediate' },
   });
   assert.equal(immediate({ turnReason: 'error' }).outcome, 'failed');
@@ -72,10 +71,6 @@ test('an interrupted turn says so', () => {
   assert.equal(report.outcome, 'failed');
 });
 
-test('no serve token is sent when the recall carried none', () => {
-  assert.equal('serve_token' in immediate({ asset: { assetId: 'sha256:a', strategyText: '' } }), false);
-});
-
 test('a report reveals no command, prompt or code', () => {
   const report = immediate({ checks: [{ command: 'API_KEY=hunter22 npm test -- secret/path.js', failed: false }] });
   assert.doesNotMatch(JSON.stringify(report), /hunter22|secret\/path|npm test/);
@@ -88,7 +83,6 @@ test('a correction or approval follow-up is L3 under the turn task id plus :corr
     outcome: 'failed',
     task_id: 'claude-code:s1:4:correction',
     reason: "The person's next prompt read as correction of the turn that reused this strategy.",
-    serve_token: '1791800000.1.3.ab12',
     evidence: { tier: 'L3', applied: 'used', stage: 'correction' },
   });
   assert.equal(correctionReportOf(reuse, 'praise').outcome, 'success');
@@ -147,8 +141,12 @@ test('a report the Hub already holds counts as delivered and is not retried', as
   assert.equal(Object.values(outbox)[0].sentAt, NOW);
 });
 
-test('a report the Hub judged ineligible is still delivered', async () => {
-  const sinks = ledgers({ hub: { ok: true, data: { recorded: true, eligible: false, reason: 'no_delivery_proof' } } });
-  const outbox = await deliverPending(sinks, withQueued({}, [{ report: immediate(), sessionId: 's1' }], NOW), NOW);
-  assert.equal(Object.values(outbox)[0].sentAt, NOW);
-});
+for (const reason of ['daily_cap', 'same_owner', 'no_delivery_proof']) {
+  test(`a report the Hub judged ineligible (${reason}) is delivered and not retried`, async () => {
+    const sinks = ledgers({ hub: { ok: true, data: { recorded: true, eligible: false, reason } } });
+    const outbox = await deliverPending(sinks, withQueued({}, [{ report: immediate(), sessionId: 's1' }], NOW), NOW);
+    assert.equal(Object.values(outbox)[0].sentAt, NOW);
+    await deliverPending(sinks, outbox, NOW + 1);
+    assert.equal(sinks.posts.length, 1);
+  });
+}

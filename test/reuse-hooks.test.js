@@ -14,13 +14,11 @@ writeFileSync(join(stage, 'hooks/register.mjs'), stripTypeScriptTypes(readFileSy
 const { register } = await import(pathToFileURL(join(stage, 'hooks/register.mjs')));
 
 const PROMPT = 'fix the flaky redis connection retries in our tests';
-const SERVE_TOKEN = '1791800000.1.3.ab12cd34ef56ab12cd34ef56';
 const ASSET = {
   asset_id: 'sha256:' + 'a'.repeat(64),
   short_title: 'Fix flaky Redis connection retries',
   summary: 'Stabilise redis connection retries in tests',
   signals_match: ['redis', 'connection', 'retries', 'flaky'],
-  serve_token: SERVE_TOKEN,
   strategy: [
     'Set `maxRetriesPerRequest` to null in lib/redis.js',
     'Run npm test to confirm the suite passes',
@@ -94,14 +92,14 @@ async function injectedTurn(f, { checks = [], edit = false, reason = 'answer' } 
   await settle();
 }
 
-test('a turn that ran no check reports its injection with tier none and the serve token', async () => {
+test('a turn that ran no check reports its injection with tier none', async () => {
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f);
   assert.equal(f.reports.length, 1);
   const [report] = f.reports;
   assert.equal(report.asset_id, ASSET.asset_id);
-  assert.equal(report.serve_token, SERVE_TOKEN);
+  assert.deepEqual(Object.keys(report), ['asset_id', 'outcome', 'task_id', 'reason', 'evidence']);
   assert.equal(report.task_id, 'claude-code:s1:1');
   assert.deepEqual(report.evidence, { tier: 'none', applied: 'partial', aborted: false, stage: 'immediate' });
   assert.deepEqual(f.sidecarRuns, []);
@@ -131,7 +129,7 @@ test('the next composer prompt reading as a correction sends one L3 follow-up', 
   assert.equal(followUps.length, 1);
   assert.equal(followUps[0].task_id, 'claude-code:s1:1:correction');
   assert.equal(followUps[0].outcome, 'failed');
-  assert.equal(followUps[0].serve_token, SERVE_TOKEN);
+  assert.deepEqual(Object.keys(followUps[0]), ['asset_id', 'outcome', 'task_id', 'reason', 'evidence']);
   assert.deepEqual(followUps[0].evidence, { tier: 'L3', applied: 'partial', stage: 'correction' });
 });
 
@@ -211,12 +209,12 @@ test('an interrupted turn is reported as aborted', async () => {
   assert.equal(f.reports[0].outcome, 'failed');
 });
 
-test("the model's own report carries L5 evidence and the injection's serve token", async () => {
+test("the model's own report carries L5 evidence", async () => {
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f);
   await f.call('tool.call', { tool: 'mcp__evolver-mods__evolver_asset_reuse_result', asset_id: ASSET.asset_id, outcome: 'success' });
   const self = f.reports.at(-1);
-  assert.equal(self.serve_token, SERVE_TOKEN);
+  assert.equal('serve_token' in self, false);
   assert.deepEqual(self.evidence, { tier: 'L5', applied: 'used', stage: 'immediate' });
 });

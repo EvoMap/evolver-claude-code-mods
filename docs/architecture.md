@@ -12,7 +12,7 @@ Served by the plugin itself and listed as `mcp__evolver-mods__<name>`:
 | `evolver_status` | Proxy state: node id, pending counts, last Hub sync. |
 | `evolver_search_assets` | Search genes, capsules, evolution events or anti-genes by signal or text. |
 | `evolver_fetch_asset` | An asset's summary, strategy steps and validation commands. |
-| `evolver_asset_reuse_result` | Report a reuse as `success` / `failed` / `mismatched` / `stale` / `unsafe`. Sent with `L5` evidence and the recall's serve token, alongside the automatic report. |
+| `evolver_asset_reuse_result` | Report a reuse as `success` / `failed` / `mismatched` / `stale` / `unsafe`. Sent with `L5` evidence, alongside the automatic report. |
 | `evolver_distill_conversation` | Turn verified work into a reusable asset; publishing is opt-in. |
 | `evolver_publish_asset` | Queue genes or capsules for Hub review. |
 | `evolver_poll` / `evolver_ack` | Read mailbox messages, then retire them by id. |
@@ -148,9 +148,8 @@ Two engine rules shape this split:
   it as `prompt.submit` context would reach the first request but holds the person's
   message off screen until recall returns (3.6–5.7 s measured); that trade was declined.
 - **Reuse reports.** Every injection is reported, through the Proxy's
-  `POST /asset/reuse-result`, as `{asset_id, outcome, task_id, reason, serve_token?,
-  evidence}`; the field names are shared with the Hub and Evolver. The serve token is
-  the one the Hub issued with the recalled asset. `reason` names the turn, the applied
+  `POST /asset/reuse-result`, as `{asset_id, outcome, task_id, reason, evidence}`; the
+  field names are shared with the Hub and Evolver. `reason` names the turn, the applied
   verdict and the check kind, never the prompt, a command, code or a diff, and the
   prompt loses keys and tokens before recall sends it.
 
@@ -167,8 +166,11 @@ Two engine rules shape this split:
   `none` report counts as exposure only on the Hub and is not written to the local
   ledger. An older Proxy drops the new fields and the plugin runs unchanged.
 - **Report outbox.** Reports are keyed by task id and asset, queued once and retried
-  until the Proxy records them, for as long as a serve token lives (8 days); the Hub
-  de-duplicates on the same key.
+  for 8 days, long enough for a retention follow-up a week later. A report counts as
+  delivered once the Hub answers it at all: `recorded`, `duplicate_report`, or
+  `eligible: false` (`daily_cap`, `same_owner`, `no_delivery_proof`) are final, so
+  only an unreachable Proxy or an unrecorded answer is retried. The Hub counts one
+  turn-end report per node, asset and UTC day.
 - **Turn numbers** come from a per-session counter in `$.store`, one per turn whatever
   started it: `$.session.turns()` counts only the person's prompts, so a turn a task
   notification starts would reuse the previous number and its report would share that

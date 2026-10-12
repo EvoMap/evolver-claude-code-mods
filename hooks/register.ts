@@ -3,7 +3,7 @@ import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 import { appliedVerdictOf } from '../lib/applied.js'
 import { EDIT_TOOL_NAMES, changedLinesOf, editedContent, editedPath } from '../lib/edited-content.js'
 import { feedbackLabelOf } from '../lib/feedback-label.js'
-import { serveTokenOf, unreportedAssets, withInjected, withReported } from '../lib/injected-ledger.js'
+import { unreportedAssets, withInjected, withReported } from '../lib/injected-ledger.js'
 import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
 import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
 import { DEFAULT_PROXY_PORT, proxyResultOf, proxySettingsFrom, timedOutResult, unreachableResult } from '../lib/proxy-response.js'
@@ -18,7 +18,7 @@ import { outcomeOfReason } from '../lib/turn-outcomes.js'
 import { checkCommandOf, verificationFailed } from '../lib/verification.js'
 
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
-type Ledger = Record<string, { turn: number; injectedAt: number; serveToken?: string; strategyText?: string; reportedAt?: number }>
+type Ledger = Record<string, { turn: number; injectedAt: number; strategyText?: string; reportedAt?: number }>
 type Check = { command: string; failed: boolean }
 type TurnRecord = {
   notices: Set<string>
@@ -33,7 +33,7 @@ type Report = ReturnType<typeof immediateReportOf>
 type QueuedReport = { report: Report; sessionId: string }
 type ReportedReuse = ReturnType<typeof reportedReuseOf>
 type PendingRetention = { sessionId: string; projectDir: string; reuses: ReportedReuse[]; files: { path: string; before: string; after: string }[]; atMs: number }
-type RecallMatch = { ids: string[]; name?: string; text: string; serveToken?: string }
+type RecallMatch = { ids: string[]; name?: string; text: string }
 
 const TOOL_PREFIX = 'mcp__evolver-mods__'
 const NOTICES_KEY = 'notices'
@@ -193,7 +193,7 @@ async function showOnboardingNotices($: EngineInterface, options: PluginOptions)
 async function injectStrategy($: EngineInterface, sessionId: string, turn: number, match: RecallMatch): Promise<void> {
   if (!match.text) return
   turnRecord.reusedNames.push(match.name ?? match.ids.join(', '))
-  const injection = { turn, serveToken: match.serveToken, strategyText: match.text }
+  const injection = { turn, strategyText: match.text }
   await updateLedger($, sessionId, (ledger, now) => match.ids.reduce((next, id) => withInjected(next, id, injection, now), ledger))
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: match.text }] } })
 }
@@ -325,19 +325,13 @@ async function noteFileBeforeEdit($: EngineInterface, input: Record<string, unkn
   if (!turnRecord.editedBefore.has(path)) turnRecord.editedBefore.set(path, before)
 }
 
-async function reuseResultContext($: EngineInterface, name: string, input: Record<string, unknown>) {
-  if (name !== REUSE_RESULT_TOOL) return {}
-  return { serveToken: serveTokenOf(await readLedger($, await $.session.id()), String(input.asset_id)) }
-}
-
 async function serveTool($: EngineInterface, options: PluginOptions, name: string, call: Record<string, unknown>) {
   const tool = toolNamed(name)
   if (!tool) return { isError: true as const, result: `Unknown Evolver tool: ${name}` }
   const input = toolArguments(call)
-  const context = await reuseResultContext($, name, input)
   let request
   try {
-    request = proxyRequestFor(tool, input, context)
+    request = proxyRequestFor(tool, input)
   } catch (error) {
     return { isError: true as const, result: String((error as Error).message) }
   }

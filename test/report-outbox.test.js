@@ -13,7 +13,7 @@ test('the same report is queued once, keyed by task id and asset', () => {
   assert.equal(Object.keys(withQueued(twice, [{ report: report('t:1:correction', 'sha256:b'), sessionId: 's' }], 3)).length, 2);
 });
 
-test('reports older than a serve token lives are dropped', () => {
+test('reports older than eight days are dropped', () => {
   const queued = withQueued({}, [{ report: report('t:1'), sessionId: 's' }], 0);
   assert.deepEqual(withQueued(queued, [], OUTBOX_TTL_MS + 1), {});
 });
