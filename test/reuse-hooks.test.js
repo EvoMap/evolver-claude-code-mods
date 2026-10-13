@@ -35,7 +35,7 @@ function engine() {
   const stored = new Map();
   const reports = [];
   const sidecarRuns = [];
-  const proxy = { up: true };
+  const proxy = { up: true, answer: { recorded: true } };
   let sessionId = 's1';
   const $ = {
     plugin: { name: 'evolver-mods', root: '/plugin' },
@@ -51,7 +51,7 @@ function engine() {
       if (url.endsWith('/asset/fetch')) return { ok: true, status: 200, text: JSON.stringify({ assets: [ASSET] }) };
       if (!proxy.up) throw new Error('ECONNREFUSED');
       reports.push(JSON.parse(options.body));
-      return { ok: true, status: 200, text: JSON.stringify({ recorded: true }) };
+      return { ok: true, status: 200, text: JSON.stringify(proxy.answer) };
     } },
     clock: { now: async () => Date.now(), sleep: () => new Promise(() => {}) },
     store: {
@@ -72,7 +72,7 @@ function engine() {
   register((event, handler) => { handlers.set(event, handler); return { catch() {} }; }, { recall_wait_ms: 1000 });
   const signal = new AbortController().signal;
   const call = (event, input = {}, answer = (value) => value) => handlers.get(event)($, input, Object.assign(async (value) => answer(value), { signal }));
-  return { files, reports, sidecarRuns, proxy, call, useSession: (id) => { sessionId = id; } };
+  return { files, reports, sidecarRuns, proxy, stored, call, useSession: (id) => { sessionId = id; } };
 }
 
 async function injectedTurn(f, { checks = [], edit = false, reason = 'answer' } = {}) {
@@ -217,4 +217,19 @@ test("the model's own report carries L5 evidence", async () => {
   const self = f.reports.at(-1);
   assert.equal('serve_token' in self, false);
   assert.deepEqual(self.evidence, { tier: 'L5', applied: 'used', stage: 'immediate' });
+});
+
+test('a report the Hub refuses outright is logged once and not sent again', async () => {
+  const f = engine();
+  f.proxy.answer = { recorded: false, terminal: true, reason: 'evidence: Unrecognized key', status: 400 };
+  await f.call('session.start');
+  await injectedTurn(f, { checks: [{ command: 'npm test', failed: false }] });
+  await f.call('session.start');
+  await settle();
+  assert.equal(f.reports.length, 1);
+  assert.deepEqual(f.sidecarRuns, []);
+  const rejected = f.stored.get('errors').filter((entry) => entry.where === 'reuse-report-rejected');
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].message, /claude-code:s1:1.*Unrecognized key.*400/);
+  assert.equal(Object.values(f.stored.get('reports:outbox'))[0].rejection.status, 400);
 });

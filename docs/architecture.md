@@ -59,7 +59,8 @@ Environment variables:
 - **Every reuse is reported twice.** The command-hook `evolver` plugin is enabled too.
 - **A reuse report seems lost.** Reports wait in the plugin's store under
   `reports:outbox` until the Proxy accepts them, retried at every turn end, follow-up
-  prompt and session start for 8 days; `sentAt` marks the delivered ones.
+  prompt and session start for 8 days; `sentAt` marks the delivered ones and
+  `rejectedAt` the ones the Hub refused, with the reason beside it.
 - **Installed, but no recall, signals or turn summary.** Check
   `claude plugin list` shows it enabled and that Claude Code is 2.1.286 or newer. Hooks
   modules of installed plugins are behind a Claude Code rollout flag
@@ -170,7 +171,11 @@ Two engine rules shape this split:
   delivered once the Hub answers it at all: `recorded`, `duplicate_report`, or
   `eligible: false` (`daily_cap`, `same_owner`, `no_delivery_proof`) are final, so
   only an unreachable Proxy or an unrecorded answer is retried. The Hub counts one
-  turn-end report per node, asset and UTC day.
+  turn-end report per node, asset and UTC day. A request the Hub refuses as invalid
+  can never succeed: the Proxy marks it `terminal: true` (an older one says
+  `hub 400`, `hub 404` or `hub 422`), and the report is settled as rejected, kept
+  out of the local ledger and logged under `errors` as `reuse-report-rejected`, where
+  a contract mismatch shows up. `hub 5xx`, 401, 403, 429 and timeouts are retried.
 - **Turn numbers** come from a per-session counter in `$.store`, one per turn whatever
   started it: `$.session.turns()` counts only the person's prompts, so a turn a task
   notification starts would reuse the previous number and its report would share that

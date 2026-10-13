@@ -160,6 +160,7 @@ function reuseLedgers($: EngineInterface, options: PluginOptions) {
   return {
     proxyFetch: (method: string, path: string, body?: unknown) => proxyFetch($, options, method, path, body),
     recordLocally: async (request: unknown) => (await runSidecar($, options, 'record-reuse', request)).recorded === true,
+    onRejected: (rejection: unknown) => recordFailure($, 'reuse-report-rejected', JSON.stringify(rejection)),
   }
 }
 

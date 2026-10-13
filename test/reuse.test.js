@@ -5,6 +5,7 @@ import { withQueued } from '../lib/report-outbox.js';
 import {
   correctionReportOf,
   deliverPending,
+  deliveryOf,
   immediateReportOf,
   reportedReuseOf,
   retentionReportOf,
@@ -16,6 +17,7 @@ const NOW = 1_800_000_000_000;
 function ledgers({ hub = { ok: true, data: {} }, local = true } = {}) {
   const posts = [];
   const locals = [];
+  const rejections = [];
   return {
     posts,
     locals,
@@ -24,6 +26,8 @@ function ledgers({ hub = { ok: true, data: {} }, local = true } = {}) {
       if (hub instanceof Error) throw hub;
       return hub;
     },
+    rejections,
+    onRejected: async (rejection) => { rejections.push(rejection); },
     recordLocally: async (request) => {
       locals.push(request);
       if (local instanceof Error) throw local;
@@ -150,3 +154,56 @@ for (const reason of ['daily_cap', 'same_owner', 'no_delivery_proof']) {
     assert.equal(sinks.posts.length, 1);
   });
 }
+
+const queuedOne = (report) => withQueued({}, [{ report, sessionId: 's1' }], NOW);
+const verified = () => immediate({ checks: [{ command: 'npm test', failed: false }] });
+
+for (const data of [
+  { recorded: false, terminal: true, reason: 'evidence.tier: Invalid input', status: 400 },
+  { recorded: false, reason: 'hub 400' },
+  { recorded: false, reason: 'hub 404' },
+  { recorded: false, reason: 'hub 422: unprocessable' },
+]) {
+  test(`a report the Hub refuses (${data.reason}) is settled, logged and never written locally`, async () => {
+    const sinks = ledgers({ hub: { ok: true, data } });
+    const outbox = await deliverPending(sinks, queuedOne(verified()), NOW);
+    const [entry] = Object.values(outbox);
+    assert.equal(entry.rejectedAt, NOW);
+    assert.equal(entry.sentAt, undefined);
+    assert.equal(entry.rejection.reason, data.reason);
+    assert.deepEqual(sinks.locals, []);
+    assert.deepEqual(sinks.rejections.map(({ taskId, assetId, reason }) => ({ taskId, assetId, reason })), [
+      { taskId: 'claude-code:s1:4', assetId: 'sha256:a', reason: data.reason },
+    ]);
+
+    await deliverPending(sinks, outbox, NOW + 1);
+    assert.equal(sinks.posts.length, 1);
+    assert.equal(sinks.rejections.length, 1);
+  });
+}
+
+for (const hub of [
+  { ok: true, data: { recorded: false, reason: 'hub 500' } },
+  { ok: true, data: { recorded: false, reason: 'hub 503' } },
+  { ok: true, data: { recorded: false, reason: 'hub 429', status: 429 } },
+  { ok: true, data: { recorded: false, reason: 'hub 401' } },
+  { ok: false, error: 'timed out' },
+  new Error('ECONNREFUSED'),
+]) {
+  test(`a failure that may pass later (${hub.data?.reason ?? hub.error ?? hub.message}) is retried`, async () => {
+    const sinks = ledgers({ hub });
+    const outbox = await deliverPending(sinks, queuedOne(verified()), NOW);
+    assert.equal(Object.values(outbox)[0].rejectedAt, undefined);
+    assert.equal(Object.values(outbox)[0].sentAt, undefined);
+    await deliverPending(sinks, outbox, NOW + 1);
+    assert.equal(sinks.posts.length, 2);
+    assert.deepEqual(sinks.rejections, []);
+  });
+}
+
+test('the status a newer Proxy passes through is kept with the rejection', () => {
+  assert.deepEqual(deliveryOf({ ok: true, data: { recorded: false, terminal: true, reason: 'bad evidence', status: 400 } }), {
+    verdict: 'rejected', reason: 'bad evidence', status: 400,
+  });
+  assert.deepEqual(deliveryOf({ ok: true, data: { recorded: true, eligible: false, reason: 'daily_cap' } }), { verdict: 'sent' });
+});
