@@ -1,55 +1,28 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { correctableAssets, unreportedAssets, withCorrected, withInjected, withModelReport, withReported } from '../lib/injected-ledger.js';
+import { unreportedAssets, withInjected, withReported } from '../lib/injected-ledger.js';
 
-const NOW = 1_000_000_000_000;
-const WEEK = 7 * 24 * 60 * 60 * 1000;
+const DAY = 24 * 60 * 60 * 1000;
 
-test('an injected asset is unreported until a verdict lands, and only the first verdict counts', () => {
-  let ledger = withInjected({}, 'sha256:a', 3, NOW);
-  assert.deepEqual(unreportedAssets(ledger), [{ assetId: 'sha256:a', turn: 3 }]);
-
-  ledger = withReported(ledger, 'sha256:a', 'success', NOW + 1);
-  ledger = withReported(ledger, 'sha256:a', 'failed', NOW + 2);
-  assert.deepEqual(unreportedAssets(ledger), []);
-  assert.equal(ledger['sha256:a'].outcome, 'success');
+test('an injection keeps its turn and strategy until reported', () => {
+  const ledger = withInjected({}, 'sha256:a', { turn: 2, strategyText: '1. Step' }, 0);
+  assert.deepEqual(unreportedAssets(ledger, 2), [{ assetId: 'sha256:a', strategyText: '1. Step' }]);
+  assert.deepEqual(unreportedAssets(withReported(ledger, ['sha256:a'], 1), 2), []);
 });
 
-test('re-injecting an asset keeps its first turn', () => {
-  const ledger = withInjected(withInjected({}, 'sha256:a', 1, NOW), 'sha256:a', 5, NOW + 1);
-  assert.equal(ledger['sha256:a'].turn, 1);
+test('an asset is recorded once per session', () => {
+  const first = withInjected({}, 'sha256:a', { turn: 1, strategyText: 'one' }, 0);
+  assert.equal(withInjected(first, 'sha256:a', { turn: 3, strategyText: 'two' }, 1)['sha256:a'].turn, 1);
 });
 
-test('only a successful verdict is correctable, and only once', () => {
-  let ledger = withReported(withInjected({}, 'sha256:a', 2, NOW), 'sha256:a', 'success', NOW);
-  ledger = withReported(withInjected(ledger, 'sha256:b', 2, NOW), 'sha256:b', 'failed', NOW);
-  assert.deepEqual(correctableAssets(ledger), [{ assetId: 'sha256:a', turn: 2 }]);
-
-  ledger = withCorrected(ledger, 'sha256:a', NOW + 1);
-  assert.deepEqual(correctableAssets(ledger), []);
+test('a strategy that lands after its turn ended is reported at the next turn end', () => {
+  const ledger = withInjected({}, 'sha256:a', { turn: 2, strategyText: '' }, 0);
+  assert.deepEqual(unreportedAssets(ledger, 1), []);
+  assert.equal(unreportedAssets(ledger, 3).length, 1);
 });
 
-test('a model-reported asset never injected is still recorded once', () => {
-  const ledger = withReported({}, 'sha256:x', 'mismatched', NOW);
-  assert.equal(ledger['sha256:x'].outcome, 'mismatched');
-});
-
-test('entries older than a week are pruned on the next write', () => {
-  const ledger = withInjected(withInjected({}, 'sha256:old', 1, NOW), 'sha256:new', 2, NOW + WEEK + 1);
-  assert.deepEqual(Object.keys(ledger), ['sha256:new']);
-});
-
-test('a model report over an automatic success stands as its correction', () => {
-  let ledger = withReported(withInjected({}, 'sha256:a', 6, NOW), 'sha256:a', 'success', NOW);
-  ledger = withModelReport(ledger, 'sha256:a', 'mismatched', NOW + 1);
-  assert.deepEqual(correctableAssets(ledger), []);
-  assert.equal(ledger['sha256:a'].modelOutcome, 'mismatched');
-  assert.equal(ledger['sha256:a'].outcome, 'success');
-});
-
-test('a model report on an unreported asset is its first verdict', () => {
-  const ledger = withModelReport(withInjected({}, 'sha256:b', 2, NOW), 'sha256:b', 'failed', NOW + 1);
-  assert.equal(ledger['sha256:b'].outcome, 'failed');
-  assert.deepEqual(unreportedAssets(ledger), []);
+test('entries older than a week are pruned', () => {
+  const ledger = withInjected({}, 'sha256:old', { turn: 1, strategyText: '' }, 0);
+  assert.deepEqual(Object.keys(withInjected(ledger, 'sha256:new', { turn: 2, strategyText: '' }, 8 * DAY)), ['sha256:new']);
 });
