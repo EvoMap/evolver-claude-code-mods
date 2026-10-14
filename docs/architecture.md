@@ -122,7 +122,7 @@ Two engine rules shape this split:
 | Correction follow-up | `prompt.submit` | The next `composer` prompt after a turn is labelled once: a correction or an approval reports that turn's reuse again. |
 | Retention follow-up | `session.start` | Turns of an earlier session in the same project are judged by whether the files they edited are kept or reverted. |
 | Edit signals | `tool.call` after `next` | The notice rides the result's `context`, as a PostToolUse reminder does. |
-| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths and each edited file's content hash before its first edit are kept for the turn too. |
+| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the text each edit wrote (200,000 characters a turn at most, in memory only) and each edited file's content hash before its first edit are kept for the turn too. |
 | Turn end | `turn.complete` | Subagent turns (`agentId`) are skipped. Queues a reuse report for every injection the turn saw, returns the one-line summary as `{ text }`. |
 | Session end | `session.end` | Drains pending work, forgets the session's ledger, turn counter and follow-up label. |
 | Tools | `$.tool.register` + `tool.call` | Engine keys (`tool`, `tool_use_id`, `agentId`, `consent`) are stripped before unknown arguments are refused. |
@@ -162,7 +162,16 @@ Two engine rules shape this split:
   | `evolver_asset_reuse_result` | the model's own | `tier: L5`, `applied`, `stage: immediate` |
 
   `applied` is `used` when at least half the strategy's steps show up in the turn's
-  commands, edited paths or answer, `partial` when fewer do and `unused` when none do.
+  commands, edited paths, written code or answer, `partial` when fewer do and `unused`
+  when none do. A step shows up when a name, path or command it quotes appears, or
+  half its words do. The written code has to count: a strategy carried out in code
+  and summed up in another language shares no word with the answer. When there is
+  nothing to compare, a strategy without numbered steps or a turn that left only an
+  answer, the verdict is unknown. The Hub's contract has no such value and charges
+  `unused` a soft negative, so an unknown reuse is sent as tier `none` with `applied:
+  partial`, which weighs nothing either way, and the reason says `applied: unknown`.
+  `fail_then_pass` compares checks with output trimming (`| tail -9`, `2>&1`) removed,
+  so the same check piped differently is still the same check.
   The outcome follows the last check; with none it follows how the turn ended. A tier
   `none` report counts as exposure only on the Hub and is not written to the local
   ledger. An older Proxy drops the new fields and the plugin runs unchanged.

@@ -27,6 +27,8 @@ type TurnRecord = {
   checks: Check[]
   commands: string[]
   paths: string[]
+  edits: string[]
+  editedChars: number
   editedBefore: Map<string, string>
 }
 type Report = ReturnType<typeof immediateReportOf>
@@ -44,6 +46,7 @@ const CLAIM_NOTICE_TTL_MS = 12 * 60 * 60 * 1000
 const OUTBOX_KEY = 'reports:outbox'
 const RETENTION_KEY = 'retention:pending'
 const PATH_KEYS = ['file_path', 'notebook_path', 'path']
+const TURN_EDITED_MAX_CHARS = 200_000
 
 const freshTurnRecord = (): TurnRecord => ({
   notices: new Set(),
@@ -52,6 +55,8 @@ const freshTurnRecord = (): TurnRecord => ({
   checks: [],
   commands: [],
   paths: [],
+  edits: [],
+  editedChars: 0,
   editedBefore: new Map(),
 })
 
@@ -246,7 +251,7 @@ async function closeTurnReuse($: EngineInterface, sessionId: string, turn: numbe
     turn,
     turnReason: end.reason,
     checks: finished.checks,
-    applied: appliedVerdictOf({ strategyText: asset.strategyText, commands: finished.commands, paths: finished.paths, answer: end.answer }).verdict,
+    applied: appliedVerdictOf({ strategyText: asset.strategyText, commands: finished.commands, paths: finished.paths, edits: finished.edits, answer: end.answer }).verdict,
   }))
   await updateLedger($, sessionId, (ledger, now) => withReported(ledger, due.map(asset => asset.assetId), now))
   await $.store.set(labelableKey(sessionId), reports.map(reportedReuseOf))
@@ -319,6 +324,13 @@ function noteToolUse(input: Record<string, unknown>): void {
   for (const key of PATH_KEYS) if (typeof input[key] === 'string') turnRecord.paths.push(input[key] as string)
 }
 
+function noteEditedContent(input: Record<string, unknown>): void {
+  const kept = editedContent(input).slice(0, TURN_EDITED_MAX_CHARS - turnRecord.editedChars)
+  if (!kept) return
+  turnRecord.edits.push(kept)
+  turnRecord.editedChars += kept.length
+}
+
 async function noteFileBeforeEdit($: EngineInterface, input: Record<string, unknown>): Promise<void> {
   const path = editedPath(input)
   if (!path || turnRecord.editedBefore.has(path)) return
@@ -380,6 +392,7 @@ export const register: Register = (on, options) => {
     if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), failed: verificationFailed(ran) })
     if (!isEdit || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
+    noteEditedContent(e as Record<string, unknown>)
     const notice = signalNotice(e as Record<string, unknown>)
     return notice ? { ...ran, context: [...(ran.context ?? []), notice] } : ran
   }).catch(($, e, next) => next(e))

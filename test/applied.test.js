@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { appliedVerdictOf, concreteFeaturesOf, strategyStepsOf } from '../lib/applied.js';
@@ -48,9 +49,38 @@ test('a turn sharing nothing with the strategy left it unused', () => {
 
 test('generic words alone do not count as following a prose step', () => {
   const prose = '1. Make sure you always check the result before you report the outcome';
-  assert.equal(appliedVerdictOf({ strategyText: prose, commands: [], paths: [], answer: 'make sure always check before report outcome' }).verdict, 'unused');
+  assert.equal(appliedVerdictOf({ strategyText: prose, commands: ['ls'], paths: [], answer: 'make sure always check before report outcome' }).verdict, 'unused');
 });
 
-test('a strategy with no steps is unused', () => {
-  assert.deepEqual(appliedVerdictOf({ strategyText: '', commands: ['npm test'], paths: [], answer: '' }), { verdict: 'unused', hits: 0, steps: 0, ratio: 0 });
+test('a strategy with no steps cannot be judged', () => {
+  assert.deepEqual(appliedVerdictOf({ strategyText: '', commands: ['npm test'], paths: [], answer: '' }), { verdict: 'unknown', hits: 0, steps: 0, ratio: 0 });
+});
+
+const LRU_TURN = JSON.parse(readFileSync(new URL('./fixtures/lru-turn.json', import.meta.url), 'utf8'));
+
+test('a strategy carried out in the code the turn wrote is used, whatever language the answer is in', () => {
+  const verdict = appliedVerdictOf(LRU_TURN);
+  assert.equal(verdict.verdict, 'used');
+  assert.equal(verdict.steps, 5);
+  assert.ok(verdict.hits >= 3, `hits ${verdict.hits}`);
+});
+
+test('the same turn without its written code shows why edits must be matched', () => {
+  assert.equal(appliedVerdictOf({ ...LRU_TURN, edits: [] }).hits, 0);
+});
+
+test('a prose word that reads like a command does not stop a step from matching on its terms', () => {
+  const step = '1. On get, move the accessed node to the head of the list to mark it as most recently used';
+  const edits = ['moveToHead(node) { if (node === this.head) return } // most recently used'];
+  assert.equal(appliedVerdictOf({ strategyText: step, commands: [], paths: [], edits, answer: '' }).verdict, 'used');
+});
+
+test('work that shares nothing with the strategy is unused', () => {
+  const verdict = appliedVerdictOf({ ...LRU_TURN, edits: ['export const greeting = "hello";\n'], commands: ['ls'], paths: ['/tmp/x/greeting.js'], answer: '好了。' });
+  assert.equal(verdict.verdict, 'unused');
+});
+
+test('a turn that left only an answer, or a strategy without steps, cannot be judged', () => {
+  assert.equal(appliedVerdictOf({ strategyText: LRU_TURN.strategyText, commands: [], paths: [], edits: [], answer: '用 Map 加双向链表即可。' }).verdict, 'unknown');
+  assert.equal(appliedVerdictOf({ strategyText: 'no numbered steps here', commands: ['npm test'], paths: [], edits: [], answer: '' }).verdict, 'unknown');
 });

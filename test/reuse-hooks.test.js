@@ -30,7 +30,7 @@ const ASSET = {
 let turnIds = 0;
 const settle = () => new Promise((done) => setTimeout(done, 20));
 
-function engine() {
+function engine({ asset = ASSET } = {}) {
   const files = new Map([['/proj/lib/redis.js', 'export const retries = 3;\n']]);
   const stored = new Map();
   const reports = [];
@@ -48,7 +48,7 @@ function engine() {
       stat: async (path) => ({ realPath: path }),
     },
     http: { fetch: async (url, options) => {
-      if (url.endsWith('/asset/fetch')) return { ok: true, status: 200, text: JSON.stringify({ assets: [ASSET] }) };
+      if (url.endsWith('/asset/fetch')) return { ok: true, status: 200, text: JSON.stringify({ assets: [asset] }) };
       if (!proxy.up) throw new Error('ECONNREFUSED');
       reports.push(JSON.parse(options.body));
       return { ok: true, status: 200, text: JSON.stringify(proxy.answer) };
@@ -232,4 +232,34 @@ test('a report the Hub refuses outright is logged once and not sent again', asyn
   assert.equal(rejected.length, 1);
   assert.match(rejected[0].message, /claude-code:s1:1.*Unrecognized key.*400/);
   assert.equal(Object.values(f.stored.get('reports:outbox'))[0].rejection.status, 400);
+});
+
+const LRU_TURN = JSON.parse(readFileSync(new URL('./fixtures/lru-turn.json', import.meta.url), 'utf8'));
+const LRU_PROMPT = 'implement an LRU cache in Node.js with a doubly-linked list';
+const LRU_ASSET = {
+  asset_id: 'sha256:40c6ec437967f3ce0a2101857736b95d2770a014f452752a9421db2bee223f37',
+  summary: 'Implements a Least Recently Used (LRU) cache in Node.js using a doubly-linked list',
+  signals_match: ['lru', 'cache', 'doubly-linked', 'list'],
+  strategy: LRU_TURN.strategyText.split('\n').filter((line) => /^\d+\. /.test(line)).map((line) => line.replace(/^\d+\. /, '')),
+};
+
+test('a strategy written into code and proven by a check that first failed is reported as used, L1, fail then pass', async () => {
+  const f = engine({ asset: LRU_ASSET });
+  await f.call('session.start');
+  await f.call('prompt.submit', { text: LRU_PROMPT, origin: { kind: 'composer' } });
+  await f.call('turn.start', { text: LRU_PROMPT, turnId: 'lru' });
+  const [testFile, implementation] = LRU_TURN.edits;
+  const [before, after] = LRU_TURN.commands;
+  await f.call('tool.call', { tool: 'Write', file_path: LRU_TURN.paths[0], content: testFile }, () => ({ result: 'ok' }));
+  await f.call('tool.call', { tool: 'Bash', command: before }, () => ({ result: 'Error: test failed', isError: true }));
+  await f.call('tool.call', { tool: 'Write', file_path: LRU_TURN.paths[1], content: implementation }, () => ({ result: 'ok' }));
+  await f.call('tool.call', { tool: 'Bash', command: after }, () => ({ result: 'pass 9' }));
+  await f.call('turn.complete', { turnId: 'lru', reason: 'answer', answer: LRU_TURN.answer, isAborted: false, durationMs: 1 });
+  await settle();
+  assert.equal(f.reports[0].asset_id, LRU_ASSET.asset_id);
+  assert.equal(f.reports[0].outcome, 'success');
+  assert.deepEqual(f.reports[0].evidence, {
+    tier: 'L1', applied: 'used', check: { kind: 'test', passed: true, fail_then_pass: true }, aborted: false, stage: 'immediate',
+  });
+  assert.doesNotMatch(JSON.stringify(f.reports), /moveToHead|evictTail|hitRatio/);
 });

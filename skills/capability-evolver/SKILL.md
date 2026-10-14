@@ -26,7 +26,7 @@ Five seams work without you invoking anything:
   `perf_bottleneck`, `capability_gap`, `test_failure`, …) and adds one notice after the
   tool result when one appears.
 - **Turn end** (`turn.complete`) — every strategy injected that turn is reported to the
-  Hub with its evidence: whether the turn's commands, files and answer followed its steps,
+  Hub with its evidence: whether the turn's commands, files, written code and answer followed its steps,
   the last test, build, lint or type-check and whether that same check failed earlier in
   the turn, and whether the turn was interrupted. A turn that ran no check is still
   reported, as evidence the Hub counts as exposure only.

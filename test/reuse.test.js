@@ -207,3 +207,10 @@ test('the status a newer Proxy passes through is kept with the rejection', () =>
   });
   assert.deepEqual(deliveryOf({ ok: true, data: { recorded: true, eligible: false, reason: 'daily_cap' } }), { verdict: 'sent' });
 });
+
+test('a reuse that cannot be judged is exposure only, without the unused penalty', () => {
+  const report = immediate({ applied: 'unknown' });
+  assert.deepEqual(report.evidence, { tier: 'none', applied: 'partial', aborted: false, stage: 'immediate' });
+  assert.match(report.reason, /applied: unknown/);
+  assert.equal(immediate({ applied: 'unknown', checks: [{ command: 'npm test', failed: false }] }).evidence.tier, 'none');
+});
