@@ -182,9 +182,10 @@ Two engine rules shape this split:
   only an unreachable Proxy or an unrecorded answer is retried. The Hub counts one
   turn-end report per node, asset and UTC day. A request the Hub refuses as invalid
   can never succeed: the Proxy marks it `terminal: true` (an older one says
-  `hub 400`, `hub 404` or `hub 422`), and the report is settled as rejected, kept
+  `hub 400` or `hub 422`), and the report is settled as rejected, kept
   out of the local ledger and logged under `errors` as `reuse-report-rejected`, where
-  a contract mismatch shows up. `hub 5xx`, 401, 403, 429 and timeouts are retried.
+  a contract mismatch shows up. `hub 404` (the Hub may not serve the route yet),
+  `hub 5xx`, 401, 403, 429 and timeouts are retried until the report expires.
 - **Turn numbers** come from a per-session counter in `$.store`, one per turn whatever
   started it: `$.session.turns()` counts only the person's prompts, so a turn a task
   notification starts would reuse the previous number and its report would share that

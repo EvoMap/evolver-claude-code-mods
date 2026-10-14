@@ -161,7 +161,6 @@ const verified = () => immediate({ checks: [{ command: 'npm test', failed: false
 for (const data of [
   { recorded: false, terminal: true, reason: 'evidence.tier: Invalid input', status: 400 },
   { recorded: false, reason: 'hub 400' },
-  { recorded: false, reason: 'hub 404' },
   { recorded: false, reason: 'hub 422: unprocessable' },
 ]) {
   test(`a report the Hub refuses (${data.reason}) is settled, logged and never written locally`, async () => {
@@ -183,6 +182,7 @@ for (const data of [
 }
 
 for (const hub of [
+  { ok: true, data: { recorded: false, reason: 'hub 404' } },
   { ok: true, data: { recorded: false, reason: 'hub 500' } },
   { ok: true, data: { recorded: false, reason: 'hub 503' } },
   { ok: true, data: { recorded: false, reason: 'hub 429', status: 429 } },
