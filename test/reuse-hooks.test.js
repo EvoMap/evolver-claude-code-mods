@@ -495,3 +495,15 @@ test('a resumed session keeps counting its turns, so its reports never repeat a 
   await injectedTurn(f, { checks: [{ command: 'npm test', failed: false }] });
   await until(() => f.reports.some((report) => report.task_id === 'claude-code:s1:2'), 'the resumed turn was numbered 2');
 });
+
+test('a turn counter untouched for a month is pruned; a recent one and an older-format one stay', async () => {
+  const f = engine();
+  f.stored.set('turns:stale', { turn: 4, atMs: Date.now() - 31 * 24 * 60 * 60 * 1000 });
+  f.stored.set('turns:recent', { turn: 2, atMs: Date.now() });
+  f.stored.set('turns:s1', 3);
+  await f.call('session.start');
+  await until(() => !f.stored.has('turns:stale'), 'the stale counter was pruned');
+  assert.ok(f.stored.has('turns:recent'));
+  await injectedTurn(f);
+  await until(() => f.reports.some((report) => report.task_id === 'claude-code:s1:4'), 'an older-format counter keeps counting');
+});

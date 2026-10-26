@@ -46,6 +46,7 @@ const DISTILL_TIMEOUT_MS = 120_000
 const CLI_TIMEOUT_MS = 10 * 60 * 1000
 const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000
 const CLAIM_NOTICE_TTL_MS = 12 * 60 * 60 * 1000
+const TURN_COUNTER_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const OUTBOX_KEY = 'reports:outbox'
 const RETENTION_KEY = 'retention:pending'
 const PATH_KEYS = ['file_path', 'notebook_path', 'path']
@@ -146,11 +147,26 @@ async function projectDirOf($: EngineInterface): Promise<string> {
 // would share that turn's task id, which the Hub drops as a duplicate. Every
 // turn draws its own number from a per-session counter instead, kept past the
 // session's end because `claude --resume` continues under the same id.
+function turnCountOf(stored: unknown): number {
+  const count = typeof stored === 'object' && stored !== null ? (stored as { turn?: unknown }).turn : stored
+  return Number(count ?? 0) || 0
+}
+
+// A counter is only needed while its session may still be resumed; the store is capped at 4 MiB in all.
+async function pruneTurnCounters($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('turns:')) continue
+    const atMs = Number(((await $.store.get(key)) as { atMs?: unknown } | undefined)?.atMs)
+    if (Number.isFinite(atMs) && now - atMs > TURN_COUNTER_TTL_MS) await $.store.delete(key)
+  }
+}
+
 async function turnNumberFor($: EngineInterface, sessionId: string, turnId: string): Promise<number> {
   const known = turnNumbers.get(turnId)
   if (known !== undefined) return known
-  const next = Number((await $.store.get(turnCounterKey(sessionId))) ?? 0) + 1
-  await $.store.set(turnCounterKey(sessionId), next)
+  const next = turnCountOf(await $.store.get(turnCounterKey(sessionId))) + 1
+  await $.store.set(turnCounterKey(sessionId), { turn: next, atMs: await $.clock.now() })
   turnNumbers.set(turnId, next)
   return next
 }
@@ -478,6 +494,7 @@ async function startSession($: EngineInterface, options: PluginOptions): Promise
   const sessionId = await $.session.id()
   await registerCommands($, options)
   track($, 'store-ledgers', dropRetiredStoreLedgers($))
+  track($, 'turn-counters', pruneTurnCounters($))
   track($, 'onboarding', showOnboardingNotices($, options))
   track($, 'retention', settleRetention($, options, sessionId))
   track($, 'orphaned', reportOrphanedInjections($, options))
