@@ -1,9 +1,8 @@
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import { appliedVerdictOf } from '../lib/applied.js'
 import { evolverCommands, runEvolverCli } from '../lib/commands.js'
 import { candidateOf, distillCandidate, skipReason } from '../lib/distill.js'
-import { EDIT_TOOL_NAMES, changedLinesOf, editedContent, editedPath } from '../lib/edited-content.js'
+import { EDIT_TOOL_NAMES, changedLinesOf, editedPath } from '../lib/edited-content.js'
 import { feedbackLabelOf } from '../lib/feedback-label.js'
 import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
 import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
@@ -18,7 +17,6 @@ import { checkCommandOf, verificationFailed } from '../lib/verification.js'
 
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
 type Check = { command: string; failed: boolean }
-type TurnEvidence = { checks: Check[]; commands: string[]; paths: string[]; edits: string[]; answer: string }
 type TurnRecord = {
   reusedNames: string[]
   changedLines: number
@@ -26,7 +24,6 @@ type TurnRecord = {
   commands: string[]
   paths: string[]
   edits: string[]
-  editedChars: number
   editedBefore: Map<string, string>
 }
 type Report = ReturnType<typeof immediateReportOf>
@@ -50,9 +47,7 @@ const TURN_COUNTER_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const OUTBOX_KEY = 'reports:outbox'
 const RETENTION_KEY = 'retention:pending'
 const PATH_KEYS = ['file_path', 'notebook_path', 'path']
-const TURN_EDITED_MAX_CHARS = 200_000
 const WINDOWS_COMMAND_NOT_FOUND = 9009
-const EMPTY_RECORD: TurnEvidence = { checks: [], commands: [], paths: [], edits: [], answer: '' }
 
 const freshTurnRecord = (): TurnRecord => ({
   reusedNames: [],
@@ -61,7 +56,6 @@ const freshTurnRecord = (): TurnRecord => ({
   commands: [],
   paths: [],
   edits: [],
-  editedChars: 0,
   editedBefore: new Map(),
 })
 
@@ -285,20 +279,13 @@ function queueReports($: EngineInterface, options: PluginOptions, queued: Queued
   return outboxWork
 }
 
-function reportsOf(assets: OpenAsset[], { sessionId, turn, turnReason, record }: { sessionId: string; turn?: number; turnReason: string; record: TurnEvidence }): Report[] {
-  return assets.map(asset => immediateReportOf({
-    asset,
-    sessionId,
-    turn: turn ?? asset.turn,
-    turnReason,
-    checks: record.checks,
-    applied: appliedVerdictOf({ strategyText: asset.strategyText, ...record }).verdict,
-  }))
+function reportsOf(assets: OpenAsset[], { sessionId, turn, turnReason, checks }: { sessionId: string; turn?: number; turnReason: string; checks: Check[] }): Report[] {
+  return assets.map(asset => immediateReportOf({ asset, sessionId, turn: turn ?? asset.turn, turnReason, checks }))
 }
 
 async function closeTurnReuse($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, end: { reason: string; answer: string }, finished: TurnRecord): Promise<Report[]> {
   const { assets: due } = await stateCall($, options, 'take-unreported', { sessionId, turn })
-  const reports = reportsOf(due, { sessionId, turn, turnReason: end.reason, record: { ...finished, answer: end.answer } })
+  const reports = reportsOf(due, { sessionId, turn, turnReason: end.reason, checks: finished.checks })
   await $.store.set(labelableKey(sessionId), reports.map(reportedReuseOf))
   return reports
 }
@@ -307,7 +294,7 @@ async function closeTurnReuse($: EngineInterface, options: PluginOptions, sessio
 function abortedReports(assets: OpenAsset[], sessionOf: (asset: OpenAsset) => string): QueuedReport[] {
   return assets.map(asset => {
     const sessionId = sessionOf(asset)
-    return { report: reportsOf([asset], { sessionId, turnReason: 'aborted', record: EMPTY_RECORD })[0]!, sessionId }
+    return { report: reportsOf([asset], { sessionId, turnReason: 'aborted', checks: [] })[0]!, sessionId }
   })
 }
 
@@ -402,8 +389,7 @@ async function forgetCandidate($: EngineInterface, options: PluginOptions, sessi
 // Queued at once, so a correction that follows the turn finds the candidate already written.
 function rememberTurnCandidate($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, end: { reason: string; answer: string }, finished: TurnRecord, reports: Report[]): Promise<void> {
   const record = { ...finished, answer: end.answer }
-  const reusedAsset = reports.some(report => report.evidence.applied === 'used')
-  if (skipReason(end.reason, record, { reusedAsset })) return Promise.resolve()
+  if (skipReason(end.reason, record)) return Promise.resolve()
   const prompt = lastPrompts.get(sessionId)
   return inOrder(async () => {
     const candidate = candidateOf({ prompt, record, model: await $.session.model(), turn, now: await $.clock.now() })
@@ -428,11 +414,9 @@ function noteToolUse(input: Record<string, unknown>): void {
   for (const key of PATH_KEYS) if (typeof input[key] === 'string') turnRecord.paths.push(input[key] as string)
 }
 
-function noteEditedContent(input: Record<string, unknown>): void {
-  const kept = editedContent(input).slice(0, TURN_EDITED_MAX_CHARS - turnRecord.editedChars)
-  if (!kept) return
-  turnRecord.edits.push(kept)
-  turnRecord.editedChars += kept.length
+function noteEditedFile(input: Record<string, unknown>): void {
+  const edited = editedPath(input)
+  if (edited) turnRecord.edits.push(edited)
 }
 
 async function noteFileBeforeEdit($: EngineInterface, input: Record<string, unknown>): Promise<void> {
@@ -549,7 +533,7 @@ export const register: Register = (on, options) => {
     if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), failed: verificationFailed(ran) })
     if (!isEdit || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
-    noteEditedContent(e as Record<string, unknown>)
+    noteEditedFile(e as Record<string, unknown>)
     return ran
   }).catch(($, e, next) => next(e))
 

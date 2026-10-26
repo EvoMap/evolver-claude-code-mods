@@ -121,7 +121,7 @@ Two engine rules shape this split:
 | Recall | `prompt.submit` marks · `turn.start` recalls | `prompt.submit` knows the prompt's `origin` (`composer`, `bridge`, `sdk`, `scheduled-trigger` count as the person) but resolves only after its turn started, so the prompt is marked before `next`. `turn.start` is observe-only: the strategy is appended with `$.session.append` and reaches the model from the turn's next step. A recall slower than the wait is appended when it lands, unless the turn was interrupted. A prompt folded into a running turn is not recalled for: one recall per turn. |
 | Correction follow-up | `prompt.submit` | The next `composer` prompt after a turn is labelled once: a correction or an approval reports that turn's reuse again. |
 | Retention follow-up | `session.start` | Turns of an earlier session in the same project are judged by whether the files they edited are kept or reverted. |
-| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the text each edit wrote (200,000 characters a turn at most, in memory only) and each edited file's content hash before its first edit are kept for the turn too. |
+| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the files each edit wrote and each edited file's content hash before its first edit are kept for the turn too. |
 | Turn end | `turn.complete` | Subagent turns (`agentId`) are skipped. Queues a reuse report for every injection the turn saw, leaves a distillation candidate when the turn qualifies, returns the one-line summary as `{ text }`. |
 | Session start | `session.start` | Registers the commands, reports the open injections of any session whose Claude Code process is gone (a resumed one's own included) as aborted, and claims and distills leftover candidates in the background. |
 | Session end | `session.end` | Only writes, since every plugin's hook shares one short bound: the injections no turn end reported go into the outbox as aborted (delivered by the next session), the candidate is closed, and the ledger and follow-up label are forgotten. The turn counter stays: `claude --resume` continues under the same session id. |
@@ -150,26 +150,21 @@ Two engine rules shape this split:
   message off screen until recall returns (3.6–5.7 s measured); that trade was declined.
 - **Reuse reports.** Every injection is reported, through the Proxy's
   `POST /asset/reuse-result`, as `{asset_id, outcome, task_id, reason, evidence}`; the
-  field names are shared with the Hub and Evolver. `reason` names the turn, the applied
-  verdict and the check kind, never the prompt, a command, code or a diff, and the
+  field names are shared with the Hub and Evolver. `reason` names the turn and the check
+  kind, never the prompt, a command, code or a diff, and the
   prompt loses keys and tokens before recall sends it.
 
   | Report | `task_id` | `evidence` |
   |---|---|---|
-  | Turn end | `claude-code:<session>:<turn>` | `tier` `L1` when a check ran, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}`; `aborted`; `stage: immediate` |
-  | Next prompt corrects or approves | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
-  | Next session finds the edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
-  | Aborted: the session ends, or is killed, before the turn ends (a killed session's go out at the next session start, once its Claude Code process is gone) | `claude-code:<session>:<turn>` | `tier: none`, `applied: partial`, `aborted: true`, `stage: immediate` |
+  | Turn end | `claude-code:<session>:<turn>` | `tier` `L1` when a check ran, else `none`; `applied: used`; `check` `{kind, passed, fail_then_pass}`; `aborted`; `stage: immediate` |
+  | Next prompt corrects or approves | `…:correction` | `tier: L3`, `applied: used`, `stage: correction` |
+  | Next session finds the edits kept or reverted | `…:retention` | `tier: L2`, `applied: used`, `stage: retention` |
+  | Aborted: the session ends, or is killed, before the turn ends (a killed session's go out at the next session start, once its Claude Code process is gone) | `claude-code:<session>:<turn>` | `tier: none`, `applied: used`, `aborted: true`, `stage: immediate` |
 
-  `applied` is `used` when at least half the strategy's steps show up in the turn's
-  commands, edited paths, written code or answer, `partial` when fewer do and `unused`
-  when none do. A step shows up when a name, path or command it quotes appears, or
-  half its words do. The written code has to count: a strategy carried out in code
-  and summed up in another language shares no word with the answer. When there is
-  nothing to compare, a strategy without numbered steps or a turn that left only an
-  answer, the verdict is unknown. The Hub's contract has no such value and charges
-  `unused` a soft negative, so an unknown reuse is sent as tier `none` with `applied:
-  partial`, which weighs nothing either way, and the reason says `applied: unknown`.
+  `applied` is always `used`: the model follows a strategy injected into its turn.
+  Whether the strategy helped is what the outcome says, judged by the turn's last check
+  (or how the turn ended when it ran none), the next prompt and whether its edits were
+  kept.
   `fail_then_pass` compares checks with output trimming (`| tail -9`, `2>&1`) removed,
   so the same check piped differently is still the same check.
   The outcome follows the last check; with none it follows how the turn ended. A tier
@@ -190,11 +185,11 @@ Two engine rules shape this split:
   started it: `$.session.turns()` counts only the person's prompts, so a turn a task
   notification starts would reuse the previous number and its report would share that
   turn's task id.
-- **Session-end distillation.** A turn that ended answered, used tools, passed its last
-  check and reused no injected strategy leaves a candidate in
-  `~/.evolver/state/claude-code-distill-pending.json`; a later verified turn replaces it,
-  and a next prompt that reads as a correction drops it and stops a distillation already
-  running. One `$.model.complete` call on the session's own model writes a Gene from a
+- **Session-end distillation.** A turn that ended answered, used tools and passed its last
+  check leaves a candidate in `~/.evolver/state/claude-code-distill-pending.json`, a turn
+  that reused an injected strategy too (the engine's intake drops a Gene that repeats one
+  it already has); a later verified turn replaces it, and a next prompt that reads as a
+  correction drops it and stops a distillation already running. One `$.model.complete` call on the session's own model writes a Gene from a
   digest of that turn (task, commands, touched paths, checks, final answer — never the
   whole history) and sends it to the Proxy's `POST /conversation/distill` with
   `persist: true`, `publish: false` and its own token cost as `distill_usage`. Keys and

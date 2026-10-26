@@ -132,7 +132,7 @@ async function injectedTurn(f, { checks = [], edit = false, reason = 'answer' } 
   await settle();
 }
 
-test('a turn that ran no check reports its injection with tier none', async () => {
+test('a turn that ran no check reports its injection as used, at tier none', async () => {
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f);
@@ -141,7 +141,7 @@ test('a turn that ran no check reports its injection with tier none', async () =
   assert.equal(report.asset_id, ASSET.asset_id);
   assert.deepEqual(Object.keys(report), ['asset_id', 'outcome', 'task_id', 'reason', 'evidence']);
   assert.equal(report.task_id, 'claude-code:s1:1');
-  assert.deepEqual(report.evidence, { tier: 'none', applied: 'partial', aborted: false, stage: 'immediate' });
+  assert.deepEqual(report.evidence, { tier: 'none', applied: 'used', aborted: false, stage: 'immediate' });
   assert.deepEqual(f.sidecarRuns, []);
   assert.doesNotMatch(JSON.stringify(f.reports), /flaky redis connection retries in our tests|maxRetriesPerRequest|singleton factory/);
 });
@@ -170,7 +170,7 @@ test('the next composer prompt reading as a correction sends one L3 follow-up', 
   assert.equal(followUps[0].task_id, 'claude-code:s1:1:correction');
   assert.equal(followUps[0].outcome, 'failed');
   assert.deepEqual(Object.keys(followUps[0]), ['asset_id', 'outcome', 'task_id', 'reason', 'evidence']);
-  assert.deepEqual(followUps[0].evidence, { tier: 'L3', applied: 'partial', stage: 'correction' });
+  assert.deepEqual(followUps[0].evidence, { tier: 'L3', applied: 'used', stage: 'correction' });
 });
 
 test('a prompt that neither corrects nor approves sends nothing, and only composer prompts count', async () => {
@@ -223,6 +223,7 @@ test('edits reverted by the next session report the reuse as failed', async () =
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f, { edit: true });
+  await until(() => (f.stored.get('retention:pending') ?? []).length === 1, 'the edited file was recorded for retention');
   await f.call('session.end', { sessionId: 's1' });
   f.files.set('/proj/lib/redis.js', 'export const retries = 3;\n');
   f.useSession('s2');
@@ -326,7 +327,7 @@ test('nothing of Evolver but the commands is registered: no tools, no skill, no 
   assert.equal(edited.context, undefined);
 });
 
-test('a verified turn that reused nothing becomes the candidate, distilled by the session model at the next session start', async () => {
+test('a verified turn becomes the candidate, distilled by the session model at the next session start', async () => {
   const f = engine({ asset: plainAsset });
   await f.call('session.start');
   await verifiedTurn(f);
@@ -354,12 +355,17 @@ test('a verified turn that reused nothing becomes the candidate, distilled by th
   assert.match(f.completions[0].prompt, /## Task\nadd a retry to the uploader please/);
 });
 
-test('a turn that reused the injected strategy adds evidence to it instead of a candidate', async () => {
+test('a verified turn that reused an injected strategy is distilled too', async () => {
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f, { checks: [{ command: 'npm test', failed: false }] });
   assert.equal(f.reports[0].evidence.applied, 'used');
-  assert.deepEqual(due(f), []);
+  assert.equal(due(f).length, 1);
+  await f.call('session.end', { sessionId: 's1' });
+  f.useSession('s2');
+  await f.call('session.start');
+  await until(() => f.distills.length === 1, 'the reused turn was distilled');
+  assert.equal(f.completions.length, 1);
 });
 
 test('a correction drops the candidate, and stops a distillation already running', async () => {
@@ -414,7 +420,7 @@ test('a strategy whose turn never ended is reported aborted when the session end
   await until(() => f.reports.length === 1, 'the next session delivered it');
   assert.equal(f.reports[0].task_id, 'claude-code:s1:1');
   assert.equal(f.reports[0].outcome, 'failed');
-  assert.deepEqual(f.reports[0].evidence, { tier: 'none', applied: 'partial', aborted: true, stage: 'immediate' });
+  assert.deepEqual(f.reports[0].evidence, { tier: 'none', applied: 'used', aborted: true, stage: 'immediate' });
 });
 
 test("the next session reports a killed session's open strategies, and leaves an idle one's alone", async () => {

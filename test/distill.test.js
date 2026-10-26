@@ -29,13 +29,12 @@ function fakeModel(text = JSON.stringify(GENE)) {
   return model;
 }
 
-test('only a verified, answered turn that used tools and reused no strategy becomes a candidate', () => {
+test('only a verified, answered turn that used tools becomes a candidate', () => {
   assert.equal(skipReason('answer', record()), null);
   assert.equal(skipReason('aborted', record()), 'not_answered');
   assert.equal(skipReason('answer', record({ answer: '' })), 'no_answer');
   assert.equal(skipReason('answer', record({ checks: [{ command: 'npm test', failed: true }] })), 'failed_check');
   assert.equal(skipReason('answer', record({ commands: [] })), 'no_tool_use');
-  assert.equal(skipReason('answer', record(), { reusedAsset: true }), 'asset_reused');
 });
 
 test('the prompt is a digest of the turn, never its whole history, and asks for no answer values', () => {
