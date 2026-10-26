@@ -63,3 +63,9 @@ test('the summary is one line, since the desktop notice renders no line breaks',
   const summary = turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: false }, usage: USAGE });
   assert.equal(summary.includes('\n'), false);
 });
+
+test('the goal names the check by its label, so a multi-line script never reaches the one-line notice', () => {
+  const summary = turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: "python3 - <<'EOF'\nassert ok\nEOF", label: 'Check the README edits', failed: false }, changedLines: 10 });
+  assert.match(summary, /^✓ Goal reached \(last check passed: Check the README edits\) · /);
+  assert.doesNotMatch(summary, /\n/);
+});

@@ -13,10 +13,10 @@ import { correctionReportOf, deliverPending, immediateReportOf, reportedReuseOf,
 import { recallStatusOf, statusLineOf } from '../lib/status-line.js'
 import { turnSummaryOf } from '../lib/turn-summary.js'
 import { outcomeOfReason } from '../lib/turn-outcomes.js'
-import { checkCommandOf, verificationFailed } from '../lib/verification.js'
+import { checkCommandOf, checkLabelOf, verificationFailed } from '../lib/verification.js'
 
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
-type Check = { command: string; failed: boolean }
+type Check = { command: string; label: string; failed: boolean }
 type TurnRecord = {
   reusedNames: string[]
   changedLines: number
@@ -530,7 +530,7 @@ export const register: Register = (on, options) => {
     if (isEdit) await noteFileBeforeEdit($, e as Record<string, unknown>)
     const ran = await next(e)
     const checkCommand = ran.deny === undefined ? checkCommandOf(e) : null
-    if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), failed: verificationFailed(ran) })
+    if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), label: checkLabelOf(e), failed: verificationFailed(ran) })
     if (!isEdit || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
     noteEditedFile(e as Record<string, unknown>)
