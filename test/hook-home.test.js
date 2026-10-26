@@ -67,16 +67,16 @@ async function fixture(t) {
         timers.add(timer);
       }),
     },
-    store: { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value), delete: async (key) => stored.delete(key) },
+    store: { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value), delete: async (key) => stored.delete(key), keys: async () => [...stored.keys()] },
     session: { id: async () => 'home-test' },
-    tool: { register: async () => {} },
+    command: { register: async () => {} },
     ui: { toast: (text) => toasts.push(text) },
     process: { run: async () => { throw new Error('CLI is not installed in this hook fixture'); } },
   };
   t.after(() => timers.forEach(clearTimeout));
   register(on, { proxy_port: port, claim_nudge_enabled: true });
   const call = (event, input = {}) => handlers.get(event)(engine, input, async (value) => value);
-  const status = () => call('tool.call', { tool: 'mcp__evolver-mods__evolver_status' });
+  const status = async () => JSON.parse((await call('command.run', { command: 'evolver-status', args: '' })).text).proxy;
   return { home, otherHome, env, reads, requests, toasts, settings, status, call, rotate: (value) => { token = value; } };
 }
 
@@ -85,9 +85,9 @@ for (const homeValue of [undefined, '']) {
     const f = await fixture(t);
     f.env.HOME = homeValue;
     f.env.USERPROFILE = f.home;
-    const answer = await f.status();
-    assert.equal(answer.isError, undefined, answer.result);
-    assert.equal(JSON.parse(answer.result).authorized, true);
+    const proxy = await f.status();
+    assert.equal(proxy.error, undefined, proxy.error);
+    assert.equal(proxy.authorized, true);
     assert.equal(f.requests[0].authorization, 'Bearer fixture-token');
     assert.equal(resolve(f.reads[0]), join(f.home, '.evolver/settings.json'));
   });
@@ -98,26 +98,25 @@ test('HOME keeps precedence over a different USERPROFILE', async (t) => {
   f.env.HOME = f.home;
   f.env.USERPROFILE = f.otherHome;
   f.settings(f.otherHome, { proxy: { token: 'wrong-profile-token' } });
-  assert.equal((await f.status()).isError, undefined);
+  assert.equal((await f.status()).error, undefined);
   assert.equal(resolve(f.reads[0]), join(f.home, '.evolver/settings.json'));
 });
 
-test('rotated credentials are reread for GET and POST tools', async (t) => {
+test('rotated credentials are reread for GET and POST commands', async (t) => {
   const f = await fixture(t);
   f.env.USERPROFILE = f.home;
-  assert.equal((await f.status()).isError, undefined);
+  assert.equal((await f.status()).error, undefined);
   f.rotate('rotated-fixture-token');
   f.settings(f.home, { proxy: { token: 'rotated-fixture-token' } });
-  const answer = await f.call('tool.call', { tool: 'mcp__evolver-mods__evolver_asset_reuse_result', asset_id: 'fixture-asset', outcome: 'success' });
-  assert.equal(answer.isError, undefined, answer.result);
+  await f.call('command.run', { command: 'evolver-search', args: 'flaky redis retries' });
   assert.equal(f.requests[1].authorization, 'Bearer rotated-fixture-token');
   assert.equal(f.requests[1].method, 'POST');
-  assert.equal(f.requests[1].path, '/asset/reuse-result');
+  assert.equal(f.requests[1].path, '/asset/search');
 });
 
 test('missing home variables never read root-directory credentials or claim links', async (t) => {
   const f = await fixture(t);
-  assert.equal((await f.status()).isError, true);
+  assert.match((await f.status()).error, /not reachable|rejected|HTTP/);
   await f.call('session.start');
   await f.call('session.end', { sessionId: 'home-test' });
   assert.deepEqual(f.reads, []);
@@ -131,7 +130,7 @@ test('claim reminders use the same Windows profile fallback', async (t) => {
   mkdirSync(join(f.home, '.evomap'));
   writeFileSync(join(f.home, '.evomap/claim_url'), 'https://evomap.ai/claim/home-test');
   await f.call('session.start');
-  await f.call('session.end', { sessionId: 'home-test' });
+  for (let waited = 0; f.toasts.length === 0 && waited < 2_000; waited += 10) await new Promise((done) => setTimeout(done, 10));
   assert.equal(resolve(f.reads[0]), join(f.home, '.evomap/claim_url'));
   assert.match(f.toasts[0], /https:\/\/evomap.ai\/claim\/home-test/);
 });
@@ -141,9 +140,7 @@ for (const settingsText of ['not json', '{}']) {
     const f = await fixture(t);
     f.env.USERPROFILE = f.home;
     f.settings(f.home, settingsText);
-    const answer = await f.status();
-    assert.equal(answer.isError, true);
-    assert.match(answer.result, /HTTP 401.*No Proxy token was found/);
+    assert.match((await f.status()).error, /HTTP 401.*No Proxy token was found/);
     assert.equal(f.requests[0].authorization, undefined);
   });
 }
@@ -152,9 +149,7 @@ test('a missing settings file stays an unauthenticated, actionable 401', async (
   const f = await fixture(t);
   f.env.USERPROFILE = f.home;
   rmSync(join(f.home, '.evolver/settings.json'));
-  const answer = await f.status();
-  assert.equal(answer.isError, true);
-  assert.match(answer.result, /HTTP 401.*No Proxy token was found/);
+  assert.match((await f.status()).error, /HTTP 401.*No Proxy token was found/);
   assert.equal(f.requests[0].authorization, undefined);
 });
 
@@ -162,15 +157,13 @@ test('an invalid token remains rejected rather than bypassing Proxy auth', async
   const f = await fixture(t);
   f.env.USERPROFILE = f.home;
   f.settings(f.home, { proxy: { token: 'wrong-fixture-token' } });
-  const answer = await f.status();
-  assert.equal(answer.isError, true);
-  assert.match(answer.result, /HTTP 401.*token .* was rejected/);
+  assert.match((await f.status()).error, /HTTP 401.*token .* was rejected/);
 });
 
 test('a non-loopback settings URL cannot receive the token', async (t) => {
   const f = await fixture(t);
   f.env.USERPROFILE = f.home;
   f.settings(f.home, { proxy: { url: 'https://invalid.example', token: 'fixture-token' } });
-  assert.equal((await f.status()).isError, undefined);
+  assert.equal((await f.status()).error, undefined);
   assert.equal(f.requests[0].path, '/proxy/status');
 });

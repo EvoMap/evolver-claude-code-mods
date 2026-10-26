@@ -40,7 +40,8 @@ test('one call recalls by text and injects that asset\'s strategy alone', async 
   assert.ok(!('asset_ids' in calls[0].body), 'ids would turn the recall back into a lookup');
   assert.deepEqual(ids, ['sha256:abc']);
   assert.match(text, /\[Evolution Memory\] Retry the upload with backoff\. \(EvoMap network\)/);
-  assert.match(text, /evolver_asset_reuse_result for sha256:abc\./);
+  assert.match(text, /\n\nApply them where they fit\.$/);
+  assert.doesNotMatch(text, /evolver_|sha256:abc/);
   assert.match(text, /^1\. Measure the failure rate first\.$/m);
   assert.match(text, /^4\. Alert on the cap\.$/m);
   assert.doesNotMatch(text, /npm test/);
@@ -69,7 +70,8 @@ test('an asset already injected this session is passed over', async () => {
   assert.deepEqual(ids, ['sha256:next']);
   assert.doesNotMatch(text, /sha256:abc|Measure the failure rate/);
   assert.match(text, /\[Evolution Memory\] Capsule \(EvoMap network\)/);
-  assert.match(text, /evolver_asset_reuse_result for sha256:next\./);
+  assert.match(text, /\n\nApply them where they fit\.$/);
+  assert.doesNotMatch(text, /evolver_|sha256:next/);
   assert.match(text, /^1\. Drain the queue first\.$/m);
 });
 
@@ -160,7 +162,8 @@ test('a named gene is announced by its name, and its hash only where it gets use
 
   assert.match(text, /^\[Evolution Memory\] Chinese Social Media Writing Template \(EvoMap network\):$/m);
   assert.doesNotMatch(text.split('\n')[0], /sha256:/, 'the hash is not what the header is for');
-  assert.match(text, /evolver_asset_reuse_result for sha256:named\./);
+  assert.match(text, /\n\nApply them where they fit\.$/);
+  assert.doesNotMatch(text, /evolver_|sha256:named/);
   assert.doesNotMatch(text, /no business being in front of the model|Also long/);
 });
 

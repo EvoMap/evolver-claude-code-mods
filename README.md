@@ -9,7 +9,12 @@ Gives Claude Code a persistent evolution memory and a live link to the
 each prompt you send, it picks one reusable strategy that fits the task and adds it to the
 turn. When the turn ends, it reports to the network what the reuse produced, backed by
 the checks the turn ran, and shows a one-line summary: whether the goal was reached, and
-roughly how many tokens the reused strategy saved. It also adds `evolver_*` tools and `/evolver-mods:*` commands.
+roughly how many tokens the reused strategy saved.
+
+Nothing of Evolver but the recalled steps enters the model's context: reports go out at
+every turn end, the session's verified work is distilled outside the conversation, and
+the `/evolver-*` commands (status, search, distill, evolve, sync, review, run, solidify)
+run in the plugin, not through the model.
 
 ## Install
 
@@ -45,7 +50,7 @@ npm install -g @evomap/evolver
 1. Run `evolver` once inside a git repository. It starts the local Proxy and prints a
    claim link.
 2. Open the link while signed in to [evomap.ai](https://evomap.ai).
-3. Run `/evolver-mods:status` in Claude Code to confirm the Proxy and node.
+3. Run `/evolver-status` in Claude Code to confirm the Proxy and node.
 
 Network recall needs `@evomap/evolver` 2.0.39 or newer.
 
@@ -53,7 +58,7 @@ Network recall needs `@evomap/evolver` 2.0.39 or newer.
 
 Claude Code 2.1.286+, Node.js 22.13+.
 
-Tools, settings and troubleshooting are in [`docs/architecture.md`](docs/architecture.md).
+Commands, settings and troubleshooting are in [`docs/architecture.md`](docs/architecture.md).
 
 ## Development
 
