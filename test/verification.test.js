@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { checkCommandOf, isVerificationCommand, verificationFailed } from '../lib/verification.js';
+import { checkCommandOf, checkLabelOf, isVerificationCommand, verificationFailed } from '../lib/verification.js';
 
 test('test, build, lint and type-check runs are verifications; other commands are not', () => {
   for (const command of ['npm test', 'pnpm run build', 'yarn lint', 'node --test test/*.test.js', 'npx vitest run', 'go test ./...',
@@ -36,4 +36,17 @@ test('a check run through Bash or PowerShell counts, a background one or another
   assert.equal(checkCommandOf({ tool: 'Bash', command: 'npm test', run_in_background: true }), null);
   assert.equal(checkCommandOf({ tool: 'Bash', command: 'git status' }), null);
   assert.equal(checkCommandOf({ tool: 'Read', command: 'npm test' }), null);
+});
+
+test('a heredoc body that names a check is data, not a check; the command lines still count', () => {
+  const editsReadme = "python3 - <<'EOF'\ntext = 'run npm test, then make'\nprint(text)\nEOF";
+  assert.equal(isVerificationCommand(editsReadme), false);
+  assert.equal(isVerificationCommand("cat > notes.md <<EOF\nmake build\nEOF\nnpm test"), true);
+  assert.equal(isVerificationCommand('npm test <<EOF\nanswers\nEOF'), true);
+});
+
+test('a check is named by its one-line description, else its first command line', () => {
+  assert.equal(checkLabelOf({ command: "python3 - <<'EOF'\nimport x\nEOF", description: 'Run the README  checker\n' }), 'Run the README checker');
+  assert.equal(checkLabelOf({ command: "\n  npm test -- --grep 'a  b'\nnpm run lint" }), "npm test -- --grep 'a b'");
+  assert.equal(checkLabelOf({ command: 'x'.repeat(200) }).length, 80);
 });
