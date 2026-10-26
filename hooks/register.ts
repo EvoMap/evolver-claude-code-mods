@@ -144,7 +144,8 @@ async function projectDirOf($: EngineInterface): Promise<string> {
 // `$.session.turns()` counts only the person's prompts, so a turn a task
 // notification starts would reuse the previous number and its reuse report
 // would share that turn's task id, which the Hub drops as a duplicate. Every
-// turn draws its own number from a per-session counter instead.
+// turn draws its own number from a per-session counter instead, kept past the
+// session's end because `claude --resume` continues under the same id.
 async function turnNumberFor($: EngineInterface, sessionId: string, turnId: string): Promise<number> {
   const known = turnNumbers.get(turnId)
   if (known !== undefined) return known
@@ -492,7 +493,6 @@ async function endSession($: EngineInterface, options: PluginOptions, sessionId:
     stateCall($, options, 'forget-session', { sessionId }),
   ])
   await quietly($, 'session-end', closing)
-  await $.store.delete(turnCounterKey(sessionId))
   await $.store.delete(labelableKey(sessionId))
   lastPrompts.delete(sessionId)
 }

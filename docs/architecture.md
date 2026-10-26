@@ -124,7 +124,7 @@ Two engine rules shape this split:
 | Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the text each edit wrote (200,000 characters a turn at most, in memory only) and each edited file's content hash before its first edit are kept for the turn too. |
 | Turn end | `turn.complete` | Subagent turns (`agentId`) are skipped. Queues a reuse report for every injection the turn saw, leaves a distillation candidate when the turn qualifies, returns the one-line summary as `{ text }`. |
 | Session start | `session.start` | Registers the commands, reports the open injections of any session whose Claude Code process is gone (a resumed one's own included) as aborted, and claims and distills leftover candidates in the background. |
-| Session end | `session.end` | Only writes, since every plugin's hook shares one short bound: the injections no turn end reported go into the outbox as aborted (delivered by the next session), the candidate is closed, and the ledger, turn counter and follow-up label are forgotten. |
+| Session end | `session.end` | Only writes, since every plugin's hook shares one short bound: the injections no turn end reported go into the outbox as aborted (delivered by the next session), the candidate is closed, and the ledger and follow-up label are forgotten. The turn counter stays: `claude --resume` continues under the same session id. |
 | Commands | `$.command.register` + `command.run` | Answer with `{ text }`; `/evolver-evolve` alone submits a prompt (`$.prompt.submit`). |
 
 ## Design decisions

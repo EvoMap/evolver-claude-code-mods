@@ -485,3 +485,13 @@ test('ledgers left in the store by an earlier version are dropped', async () => 
   await f.call('session.start');
   await until(() => !f.stored.has('injected:old-session'), 'the old ledger was dropped');
 });
+
+test('a resumed session keeps counting its turns, so its reports never repeat a task id', async () => {
+  const f = engine();
+  await f.call('session.start');
+  await injectedTurn(f);
+  await f.call('session.end', { sessionId: 's1' });
+  await f.call('session.start');
+  await injectedTurn(f, { checks: [{ command: 'npm test', failed: false }] });
+  await until(() => f.reports.some((report) => report.task_id === 'claude-code:s1:2'), 'the resumed turn was numbered 2');
+});
