@@ -38,24 +38,34 @@ test('a saving under the turn\'s own spend is the estimator\'s figure', () => {
   );
 });
 
-test('a failed check counts no saving', () => {
+test('a failed check counts no saving, and the summary leaves the saving out', () => {
   assert.equal(
-    turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: true }, changedLines: 30, usage: USAGE }),
-    '✗ Goal not reached (last check failed: npm test) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
+    turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: true }, turnReason: 'answer', changedLines: 30, usage: USAGE }),
+    '✗ Goal not reached (last check failed: npm test) · reused EvoMap strategy "Redis pool" · this turn used 6k fresh tokens',
   );
 });
 
-test('a turn no check vouched for counts no saving', () => {
+test('a turn that ran no check and ended normally reached its goal, with no saving claimed', () => {
   assert.equal(
-    turnSummaryOf({ reusedNames: ['Redis pool'], changedLines: 0, usage: USAGE }),
-    '○ Unverified (no check ran) · reused EvoMap strategy "Redis pool" · no saving counted · this turn used 6k fresh tokens',
+    turnSummaryOf({ reusedNames: ['Redis pool'], turnReason: 'answer', changedLines: 0, usage: USAGE }),
+    '✓ Goal reached · reused EvoMap strategy "Redis pool" · this turn used 6k fresh tokens',
   );
+});
+
+test('a turn that ran no check and did not end normally says nothing about the goal', () => {
+  for (const turnReason of ['aborted', 'error', 'refusal', undefined]) {
+    assert.equal(
+      turnSummaryOf({ reusedNames: ['Redis pool'], turnReason, usage: USAGE }),
+      'reused EvoMap strategy "Redis pool" · this turn used 6k fresh tokens',
+      String(turnReason),
+    );
+  }
 });
 
 test('a turn whose usage is unknown counts no saving and states no usage', () => {
   assert.equal(
     turnSummaryOf({ reusedNames: ['Redis pool'], lastCheck: { command: 'npm test', failed: false }, changedLines: 10 }),
-    '✓ Goal reached (last check passed: npm test) · reused EvoMap strategy "Redis pool" · no saving counted',
+    '✓ Goal reached (last check passed: npm test) · reused EvoMap strategy "Redis pool"',
   );
 });
 
