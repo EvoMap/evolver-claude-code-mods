@@ -1,6 +1,6 @@
 {
   "name": "@evomap/claude-code-evolver-mods",
-  "version": "0.3.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Evolver for Claude Code as a function-hooks plugin (Mods): per-turn strategy recall, evidence-backed reuse feedback, and session-end distillation.",
   "type": "module",
