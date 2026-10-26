@@ -1,7 +1,7 @@
 {
   "name": "evolver-mods",
   "displayName": "Evolver (Mods) — Self-Evolving Agent Memory",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Evolver for Claude Code as function hooks: recalls one EvoMap strategy per prompt, reports each reuse with the evidence the turn produced, and distills verified work outside the conversation. Nothing but the recalled steps enters the model's context.",
   "author": {
     "name": "EvoMap",

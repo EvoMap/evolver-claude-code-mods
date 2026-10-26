@@ -553,7 +553,7 @@ export const register: Register = (on, options) => {
     track($, 'retention', rememberForRetention($, sessionId, reports.map(reportedReuseOf), finished.editedBefore))
     track($, 'distill-candidate', rememberTurnCandidate($, options, sessionId, turn, e, finished, reports))
     const answered = await next(e)
-    const summary = turnSummaryOf({ ...finished, lastCheck: finished.checks.at(-1), usage: e.usage })
+    const summary = turnSummaryOf({ ...finished, lastCheck: finished.checks.at(-1), turnReason: e.reason, usage: e.usage })
     return summary ? { ...answered, text: summary } : answered
   })
 
