@@ -1,17 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { editedContent, editedPath } from '../lib/edited-content.js';
+import { editedPath } from '../lib/edited-content.js';
 import { isOlderThan, noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js';
 import { proxyResultOf, proxySettingsFrom } from '../lib/proxy-response.js';
 import { outcomeOfReason } from '../lib/turn-outcomes.js';
 
-test('edited content is read from every Claude Code edit tool shape', () => {
-  assert.equal(editedContent({ file_path: 'a.js', content: 'whole file' }), 'whole file');
-  assert.equal(editedContent({ file_path: 'a.js', old_string: 'x', new_string: 'y' }), 'y');
-  assert.equal(editedContent({ file_path: 'a.js', edits: [{ new_string: 'one' }, { new_string: 'two' }] }), 'one\ntwo');
-  assert.equal(editedContent({ notebook_path: 'n.ipynb', new_source: 'cell' }), 'cell');
-  assert.equal(editedPath({ notebook_path: 'n.ipynb' }), 'n.ipynb');
+test('the edited file is read from every Claude Code edit tool shape', () => {
+  assert.equal(editedPath({ file_path: 'a.js', content: 'whole file' }), 'a.js');
+  assert.equal(editedPath({ file_path: 'a.js', edits: [{ new_string: 'one' }] }), 'a.js');
+  assert.equal(editedPath({ notebook_path: 'n.ipynb', new_source: 'cell' }), 'n.ipynb');
 });
 
 test('each way a Claude Code turn can end has an outcome, and nothing else does', () => {

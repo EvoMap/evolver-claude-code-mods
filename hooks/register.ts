@@ -1,34 +1,29 @@
 import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
-import { appliedVerdictOf } from '../lib/applied.js'
-import { EDIT_TOOL_NAMES, changedLinesOf, editedContent, editedPath } from '../lib/edited-content.js'
+import { evolverCommands, runEvolverCli } from '../lib/commands.js'
+import { candidateOf, distillCandidate, skipReason } from '../lib/distill.js'
+import { EDIT_TOOL_NAMES, changedLinesOf, editedPath } from '../lib/edited-content.js'
 import { feedbackLabelOf } from '../lib/feedback-label.js'
-import { unreportedAssets, withInjected, withReported } from '../lib/injected-ledger.js'
 import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
 import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
 import { DEFAULT_PROXY_PORT, proxyResultOf, proxySettingsFrom, timedOutResult, unreachableResult } from '../lib/proxy-response.js'
 import { OUTBOX_TTL_MS, withQueued } from '../lib/report-outbox.js'
 import { ABSENT, retentionOf } from '../lib/retention.js'
 import { correctionReportOf, deliverPending, immediateReportOf, reportedReuseOf, retentionReportOf } from '../lib/reuse.js'
-import { detectSignals } from '../lib/signals.js'
 import { recallStatusOf, statusLineOf } from '../lib/status-line.js'
 import { turnSummaryOf } from '../lib/turn-summary.js'
-import { EVOLVER_TOOLS, REUSE_RESULT_TOOL, proxyRequestFor, renderToolResult, toolArguments, toolNamed } from '../lib/tools.js'
 import { outcomeOfReason } from '../lib/turn-outcomes.js'
 import { checkCommandOf, verificationFailed } from '../lib/verification.js'
 
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
-type Ledger = Record<string, { turn: number; injectedAt: number; strategyText?: string; reportedAt?: number }>
 type Check = { command: string; failed: boolean }
 type TurnRecord = {
-  notices: Set<string>
   reusedNames: string[]
   changedLines: number
   checks: Check[]
   commands: string[]
   paths: string[]
   edits: string[]
-  editedChars: number
   editedBefore: Map<string, string>
 }
 type Report = ReturnType<typeof immediateReportOf>
@@ -36,27 +31,31 @@ type QueuedReport = { report: Report; sessionId: string }
 type ReportedReuse = ReturnType<typeof reportedReuseOf>
 type PendingRetention = { sessionId: string; projectDir: string; reuses: ReportedReuse[]; files: { path: string; before: string; after: string }[]; atMs: number }
 type RecallMatch = { ids: string[]; name?: string; text: string }
+type OpenAsset = { assetId: string; strategyText: string; turn: number; sessionId?: string }
+type Candidate = ReturnType<typeof candidateOf>
+type DueCandidate = { sessionId: string; candidate: Candidate }
+type DistillOutcome = { status: string; error?: string; data?: unknown; usage?: unknown }
 
-const TOOL_PREFIX = 'mcp__evolver-mods__'
 const NOTICES_KEY = 'notices'
 const SIDECAR_TIMEOUT_MS = 90_000
 const PROXY_TIMEOUT_MS = 8_000
+const DISTILL_TIMEOUT_MS = 120_000
+const CLI_TIMEOUT_MS = 10 * 60 * 1000
 const UPGRADE_NOTICE_TTL_MS = 24 * 60 * 60 * 1000
 const CLAIM_NOTICE_TTL_MS = 12 * 60 * 60 * 1000
+const TURN_COUNTER_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const OUTBOX_KEY = 'reports:outbox'
 const RETENTION_KEY = 'retention:pending'
 const PATH_KEYS = ['file_path', 'notebook_path', 'path']
-const TURN_EDITED_MAX_CHARS = 200_000
+const WINDOWS_COMMAND_NOT_FOUND = 9009
 
 const freshTurnRecord = (): TurnRecord => ({
-  notices: new Set(),
   reusedNames: [],
   changedLines: 0,
   checks: [],
   commands: [],
   paths: [],
   edits: [],
-  editedChars: 0,
   editedBefore: new Map(),
 })
 
@@ -64,10 +63,12 @@ let turnRecord: TurnRecord = freshTurnRecord()
 const personPrompts = new Set<string>()
 const turnNumbers = new Map<string, number>()
 const abortedTurns = new Set<string>()
-const pendingWork = new Set<Promise<unknown>>()
+const distillations = new Map<string, { outcome: Promise<DistillOutcome>; controller: AbortController }>()
+const lastPrompts = new Map<string, string>()
 let outboxWork: Promise<unknown> = Promise.resolve()
+let outboxWrites: Promise<unknown> = Promise.resolve()
+let stateWork: Promise<unknown> = Promise.resolve()
 
-const ledgerKey = (sessionId: string) => `injected:${sessionId}`
 const turnCounterKey = (sessionId: string) => `turns:${sessionId}`
 const labelableKey = (sessionId: string) => `labelable:${sessionId}`
 
@@ -98,9 +99,12 @@ async function recordRecall($: EngineInterface, prompt: string, startedAt: numbe
   await $.store.set(RECALLS_KEY, [...(Array.isArray(kept) ? kept : []), entry].slice(-MAX_RECALLS))
 }
 
+function quietly($: EngineInterface, where: string, work: Promise<unknown>): Promise<unknown> {
+  return work.catch(error => recordFailure($, where, error).catch(() => undefined))
+}
+
 function track($: EngineInterface, where: string, work: Promise<unknown>): void {
-  const settled = work.catch(error => recordFailure($, where, error).catch(() => undefined)).finally(() => pendingWork.delete(settled))
-  pendingWork.add(settled)
+  void quietly($, where, work)
 }
 
 async function homeDir($: EngineInterface): Promise<string> {
@@ -122,6 +126,10 @@ async function proxyFetch($: EngineInterface, options: PluginOptions, method: st
   return Promise.race([request, deadline])
 }
 
+function proxyFetcher($: EngineInterface, options: PluginOptions) {
+  return (method: string, path: string, body?: unknown) => proxyFetch($, options, method, path, body)
+}
+
 async function projectDirOf($: EngineInterface): Promise<string> {
   const cwd = await $.session.cwd()
   const stat = await $.fs.stat(cwd, { resolve: true }).catch(() => undefined)
@@ -131,17 +139,33 @@ async function projectDirOf($: EngineInterface): Promise<string> {
 // `$.session.turns()` counts only the person's prompts, so a turn a task
 // notification starts would reuse the previous number and its reuse report
 // would share that turn's task id, which the Hub drops as a duplicate. Every
-// turn draws its own number from a per-session counter instead.
+// turn draws its own number from a per-session counter instead, kept past the
+// session's end because `claude --resume` continues under the same id.
+function turnCountOf(stored: unknown): number {
+  const count = typeof stored === 'object' && stored !== null ? (stored as { turn?: unknown }).turn : stored
+  return Number(count ?? 0) || 0
+}
+
+// A counter is only needed while its session may still be resumed; the store is capped at 4 MiB in all.
+async function pruneTurnCounters($: EngineInterface): Promise<void> {
+  const now = await $.clock.now()
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith('turns:')) continue
+    const atMs = Number(((await $.store.get(key)) as { atMs?: unknown } | undefined)?.atMs)
+    if (Number.isFinite(atMs) && now - atMs > TURN_COUNTER_TTL_MS) await $.store.delete(key)
+  }
+}
+
 async function turnNumberFor($: EngineInterface, sessionId: string, turnId: string): Promise<number> {
   const known = turnNumbers.get(turnId)
   if (known !== undefined) return known
-  const next = Number((await $.store.get(turnCounterKey(sessionId))) ?? 0) + 1
-  await $.store.set(turnCounterKey(sessionId), next)
+  const next = turnCountOf(await $.store.get(turnCounterKey(sessionId))) + 1
+  await $.store.set(turnCounterKey(sessionId), { turn: next, atMs: await $.clock.now() })
   turnNumbers.set(turnId, next)
   return next
 }
 
-async function runSidecar($: EngineInterface, options: PluginOptions, command: string, request: unknown): Promise<any> {
+async function runSidecar($: EngineInterface, options: PluginOptions, command: string, request: unknown = {}): Promise<any> {
   const ran = await $.process.run(
     [String(options.node_path || 'node'), `${$.plugin.root}/bin/evolver-io.mjs`, command],
     { stdin: JSON.stringify(request), timeoutMs: SIDECAR_TIMEOUT_MS },
@@ -151,19 +175,21 @@ async function runSidecar($: EngineInterface, options: PluginOptions, command: s
   return answer
 }
 
-async function readLedger($: EngineInterface, sessionId: string): Promise<Ledger> {
-  const stored = await $.store.get(ledgerKey(sessionId))
-  return stored && typeof stored === 'object' ? (stored as Ledger) : {}
+// The ledger and candidate files are written by separate sidecar processes, so their order is this module's:
+// a correction's drop never lands before the candidate it drops, nor a turn's report before its injection.
+function inOrder<T>(work: () => Promise<T>): Promise<T> {
+  const next = stateWork.catch(() => undefined).then(work)
+  stateWork = next
+  return next
 }
 
-async function updateLedger($: EngineInterface, sessionId: string, change: (ledger: Ledger, now: number) => Ledger): Promise<void> {
-  const now = await $.clock.now()
-  await $.store.set(ledgerKey(sessionId), change(await readLedger($, sessionId), now))
+function stateCall($: EngineInterface, options: PluginOptions, command: string, request: unknown = {}): Promise<any> {
+  return inOrder(() => runSidecar($, options, command, request))
 }
 
 function reuseLedgers($: EngineInterface, options: PluginOptions) {
   return {
-    proxyFetch: (method: string, path: string, body?: unknown) => proxyFetch($, options, method, path, body),
+    proxyFetch: proxyFetcher($, options),
     recordLocally: async (request: unknown) => (await runSidecar($, options, 'record-reuse', request)).recorded === true,
     onRejected: (rejection: unknown) => recordFailure($, 'reuse-report-rejected', JSON.stringify(rejection)),
   }
@@ -180,9 +206,12 @@ async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
+async function isWindows($: EngineInterface): Promise<boolean> {
+  return (await $.env.get('OS')) === 'Windows_NT'
+}
+
 async function showOnboardingNotices($: EngineInterface, options: PluginOptions): Promise<void> {
-  const isWindows = (await $.env.get('OS')) === 'Windows_NT'
-  const probe = await $.process.run(versionProbeArgv(isWindows), { timeoutMs: 5_000 }).catch(() => null)
+  const probe = await $.process.run(versionProbeArgv(await isWindows($)), { timeoutMs: 5_000 }).catch(() => null)
   const version = probe && probe.exitCode === 0 ? versionOf(probe.stdout) : null
   const upgrade = upgradeNoticeText(version)
   if (upgrade && (await noticeIsDue($, `evolver-version:${version}`, UPGRADE_NOTICE_TTL_MS))) $.ui.toast(upgrade)
@@ -196,11 +225,10 @@ async function showOnboardingNotices($: EngineInterface, options: PluginOptions)
   }
 }
 
-async function injectStrategy($: EngineInterface, sessionId: string, turn: number, match: RecallMatch): Promise<void> {
+async function injectStrategy($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, match: RecallMatch): Promise<void> {
   if (!match.text) return
   turnRecord.reusedNames.push(match.name ?? match.ids.join(', '))
-  const injection = { turn, strategyText: match.text }
-  await updateLedger($, sessionId, (ledger, now) => match.ids.reduce((next, id) => withInjected(next, id, injection, now), ledger))
+  await stateCall($, options, 'remember-injected', { sessionId, assetIds: match.ids, turn, strategyText: match.text })
   await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: match.text }] } })
 }
 
@@ -211,10 +239,9 @@ async function injectStrategy($: EngineInterface, sessionId: string, turn: numbe
 // not re-inject them.
 async function recallForTurn($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, turnId: string, prompt: string, signal: AbortSignal): Promise<void> {
   if (options.recall_enabled === false) return
-  const fetcher = (method: string, path: string, body?: unknown) => proxyFetch($, options, method, path, body)
-  const listedIds = new Set(Object.keys(await readLedger($, sessionId)))
+  const listedIds = new Set<string>((await stateCall($, options, 'listed-assets', { sessionId })).ids)
   const startedAt = await $.clock.now()
-  const recall: Promise<RecallMatch> = recallStrategy(fetcher, promptTextOf(prompt), {
+  const recall: Promise<RecallMatch> = recallStrategy(proxyFetcher($, options), promptTextOf(prompt), {
     listedIds,
     minSimilarity: Number(options.recall_min_similarity ?? 0.3),
     onTrace: (trace: unknown) => {
@@ -225,46 +252,57 @@ async function recallForTurn($: EngineInterface, options: PluginOptions, session
   const waitMs = Number(options.recall_wait_ms ?? 6_000)
   const inline = await Promise.race([recall, $.clock.sleep(waitMs).then(() => null)])
   if (signal.aborted) return
-  if (inline) return injectStrategy($, sessionId, turn, inline)
+  if (inline) return injectStrategy($, options, sessionId, turn, inline)
   showRecallStatus($, recallStatusOf({ outcome: 'waiting', waitedMs: waitMs }))
   track($, 'late-recall', recall.then(late => {
-    if (!abortedTurns.has(turnId)) return injectStrategy($, sessionId, turn, late)
+    if (!abortedTurns.has(turnId)) return injectStrategy($, options, sessionId, turn, late)
     if (late.text) showRecallStatus($, recallStatusOf({ outcome: 'dropped' }))
   }))
 }
 
+function writeOutbox($: EngineInterface, change: (outbox: any, now: number) => unknown): Promise<unknown> {
+  outboxWrites = outboxWrites.catch(() => undefined).then(async () => $.store.set(OUTBOX_KEY, change(await $.store.get(OUTBOX_KEY), await $.clock.now())))
+  return outboxWrites
+}
+
+function enqueueReports($: EngineInterface, queued: QueuedReport[]): Promise<unknown> {
+  return writeOutbox($, (outbox, now) => withQueued(outbox, queued, now))
+}
+
+// Delivery waits on the network, so a report queued meanwhile is merged with what was delivered, not overwritten.
 function queueReports($: EngineInterface, options: PluginOptions, queued: QueuedReport[]): Promise<unknown> {
-  outboxWork = outboxWork.catch(() => undefined).then(async () => {
-    const now = await $.clock.now()
-    const outbox = withQueued(await $.store.get(OUTBOX_KEY), queued, now)
-    await $.store.set(OUTBOX_KEY, outbox)
-    await $.store.set(OUTBOX_KEY, await deliverPending(reuseLedgers($, options), outbox, now))
+  const queuedNow = enqueueReports($, queued)
+  outboxWork = outboxWork.catch(() => undefined).then(() => queuedNow).then(async () => {
+    const delivered = await deliverPending(reuseLedgers($, options), (await $.store.get(OUTBOX_KEY)) ?? {}, await $.clock.now())
+    await writeOutbox($, latest => ({ ...(latest ?? {}), ...delivered }))
   })
   return outboxWork
 }
 
-async function closeTurnReuse($: EngineInterface, sessionId: string, turn: number, end: { reason: string; answer: string }, finished: TurnRecord): Promise<Report[]> {
-  const due = unreportedAssets(await readLedger($, sessionId), turn)
-  const reports = due.map(asset => immediateReportOf({
-    asset,
-    sessionId,
-    turn,
-    turnReason: end.reason,
-    checks: finished.checks,
-    applied: appliedVerdictOf({ strategyText: asset.strategyText, commands: finished.commands, paths: finished.paths, edits: finished.edits, answer: end.answer }).verdict,
-  }))
-  await updateLedger($, sessionId, (ledger, now) => withReported(ledger, due.map(asset => asset.assetId), now))
+function reportsOf(assets: OpenAsset[], { sessionId, turn, turnReason, checks }: { sessionId: string; turn?: number; turnReason: string; checks: Check[] }): Report[] {
+  return assets.map(asset => immediateReportOf({ asset, sessionId, turn: turn ?? asset.turn, turnReason, checks }))
+}
+
+async function closeTurnReuse($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, end: { reason: string; answer: string }, finished: TurnRecord): Promise<Report[]> {
+  const { assets: due } = await stateCall($, options, 'take-unreported', { sessionId, turn })
+  const reports = reportsOf(due, { sessionId, turn, turnReason: end.reason, checks: finished.checks })
   await $.store.set(labelableKey(sessionId), reports.map(reportedReuseOf))
   return reports
 }
 
-async function reportFollowUpLabel($: EngineInterface, options: PluginOptions, sessionId: string, prompt: string): Promise<void> {
-  const reuses = ((await $.store.get(labelableKey(sessionId))) ?? []) as ReportedReuse[]
-  if (reuses.length === 0) return
-  await $.store.delete(labelableKey(sessionId))
-  const label = feedbackLabelOf(promptTextOf(prompt))
-  const reports = reuses.map(reuse => correctionReportOf(reuse, label)).filter(report => report !== null)
-  await queueReports($, options, reports.map(report => ({ report, sessionId })))
+// A strategy whose turn never ended is reported as aborted, with no evidence of its own.
+function abortedReports(assets: OpenAsset[], sessionOf: (asset: OpenAsset) => string): QueuedReport[] {
+  return assets.map(asset => {
+    const sessionId = sessionOf(asset)
+    return { report: reportsOf([asset], { sessionId, turnReason: 'aborted', checks: [] })[0]!, sessionId }
+  })
+}
+
+// A session killed mid-turn (a closed terminal, a harness timeout) leaves its injections open; once the process
+// that held them is gone, the next session start reports them. A session that is merely idle keeps its own.
+async function reportOrphanedInjections($: EngineInterface, options: PluginOptions): Promise<void> {
+  const { assets } = await stateCall($, options, 'take-orphaned-unreported')
+  await queueReports($, options, abortedReports(assets, asset => asset.sessionId ?? 'unknown'))
 }
 
 async function contentHashOf($: EngineInterface, path: string): Promise<string> {
@@ -309,14 +347,66 @@ async function settleRetention($: EngineInterface, options: PluginOptions, sessi
   await queueReports($, options, queued)
 }
 
-function signalNotice(input: Record<string, unknown>): string | null {
-  const signals = detectSignals(editedContent(input))
-  if (signals.length === 0) return null
-  const where = editedPath(input) || 'edited file'
-  const noticeKey = `${where}\0${signals.join(',')}`
-  if (turnRecord.notices.has(noticeKey)) return null
-  turnRecord.notices.add(noticeKey)
-  return `[Evolution Signal] Detected: [${signals.join(', ')}] in ${where}.`
+// The session's own model runs the distillation, outside its conversation. A candidate stays on disk until
+// distilled (or given up), and one whose session is over — ended, or killed with its process — is claimed and
+// retried by the next session that starts. One distillation per session runs at a time: a second request while
+// the first runs shares its outcome.
+async function settle($: EngineInterface, options: PluginOptions, due: DueCandidate, sent: boolean): Promise<void> {
+  await stateCall($, options, 'settle-candidate', { ...due, sent }).catch(error => recordFailure($, 'settle-candidate', error))
+}
+
+async function distillOnce($: EngineInterface, options: PluginOptions, { sessionId, candidate }: DueCandidate, focus = ''): Promise<DistillOutcome> {
+  const running = distillations.get(sessionId)
+  if (running) return running.outcome
+  const controller = new AbortController()
+  const outcome = (async () => {
+    const isCurrent = async () => (await stateCall($, options, 'is-current-candidate', { sessionId, candidate })).current === true
+    const complete = (request: any, init?: { signal: AbortSignal }) => $.model.complete(request, init)
+    const distilled = await distillCandidate({ proxyFetch: proxyFetcher($, options), complete, candidate, focus, timeoutMs: DISTILL_TIMEOUT_MS, cancel: controller.signal, isCurrent })
+    await settle($, options, { sessionId, candidate }, distilled.status === 'sent')
+    return distilled
+  })().finally(() => distillations.delete(sessionId))
+  distillations.set(sessionId, { outcome, controller })
+  return outcome
+}
+
+async function distillSession($: EngineInterface, options: PluginOptions, sessionId: string, focus: string): Promise<DistillOutcome> {
+  const { due } = await stateCall($, options, 'due-candidates', { sessionId })
+  return due.length > 0 ? distillOnce($, options, due[0], focus) : { status: 'nothing' }
+}
+
+async function distillLeftovers($: EngineInterface, options: PluginOptions): Promise<void> {
+  const { claimed } = await stateCall($, options, 'claim-leftover-candidates')
+  await Promise.all(claimed.map((due: DueCandidate) => quietly($, 'distill', distillOnce($, options, due))))
+}
+
+/** The session's turn no longer deserves a Gene: its candidate goes, and a distillation already running stops. */
+async function forgetCandidate($: EngineInterface, options: PluginOptions, sessionId: string): Promise<void> {
+  await stateCall($, options, 'drop-candidate', { sessionId })
+  distillations.get(sessionId)?.controller.abort()
+}
+
+// Queued at once, so a correction that follows the turn finds the candidate already written.
+function rememberTurnCandidate($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, end: { reason: string; answer: string }, finished: TurnRecord, reports: Report[]): Promise<void> {
+  const record = { ...finished, answer: end.answer }
+  if (skipReason(end.reason, record)) return Promise.resolve()
+  const prompt = lastPrompts.get(sessionId)
+  return inOrder(async () => {
+    const candidate = candidateOf({ prompt, record, model: await $.session.model(), turn, now: await $.clock.now() })
+    await runSidecar($, options, 'remember-candidate', { sessionId, candidate })
+  })
+}
+
+// The next prompt is the only verdict on a turn available without asking anyone: when it reads as a correction,
+// the reuse reports are revised and the turn is no longer worth distilling.
+async function reportFollowUpLabel($: EngineInterface, options: PluginOptions, sessionId: string, prompt: string): Promise<void> {
+  const label = feedbackLabelOf(promptTextOf(prompt))
+  if (label === 'correction') await forgetCandidate($, options, sessionId)
+  const reuses = ((await $.store.get(labelableKey(sessionId))) ?? []) as ReportedReuse[]
+  if (reuses.length === 0) return
+  await $.store.delete(labelableKey(sessionId))
+  const reports = reuses.map(reuse => correctionReportOf(reuse, label)).filter(report => report !== null)
+  await queueReports($, options, reports.map(report => ({ report, sessionId })))
 }
 
 function noteToolUse(input: Record<string, unknown>): void {
@@ -324,11 +414,9 @@ function noteToolUse(input: Record<string, unknown>): void {
   for (const key of PATH_KEYS) if (typeof input[key] === 'string') turnRecord.paths.push(input[key] as string)
 }
 
-function noteEditedContent(input: Record<string, unknown>): void {
-  const kept = editedContent(input).slice(0, TURN_EDITED_MAX_CHARS - turnRecord.editedChars)
-  if (!kept) return
-  turnRecord.edits.push(kept)
-  turnRecord.editedChars += kept.length
+function noteEditedFile(input: Record<string, unknown>): void {
+  const edited = editedPath(input)
+  if (edited) turnRecord.edits.push(edited)
 }
 
 async function noteFileBeforeEdit($: EngineInterface, input: Record<string, unknown>): Promise<void> {
@@ -338,28 +426,81 @@ async function noteFileBeforeEdit($: EngineInterface, input: Record<string, unkn
   if (!turnRecord.editedBefore.has(path)) turnRecord.editedBefore.set(path, before)
 }
 
-async function serveTool($: EngineInterface, options: PluginOptions, name: string, call: Record<string, unknown>) {
-  const tool = toolNamed(name)
-  if (!tool) return { isError: true as const, result: `Unknown Evolver tool: ${name}` }
-  const input = toolArguments(call)
-  let request
-  try {
-    request = proxyRequestFor(tool, input)
-  } catch (error) {
-    return { isError: true as const, result: String((error as Error).message) }
+// `$.process.run` takes no shell, so on Windows the `evolver` and `npx` shims run through cmd.exe, which
+// reports a missing command by its exit code instead of failing to start.
+function cliRunner($: EngineInterface) {
+  return async (argv: string[]) => {
+    const onWindows = await isWindows($)
+    const ran = await $.process.run(onWindows ? ['cmd.exe', '/d', '/s', '/c', ...argv] : argv, { timeoutMs: CLI_TIMEOUT_MS })
+      .catch((error: Error) => ({ exitCode: -1, stdout: '', stderr: String(error?.message ?? error), isMissing: !/time/i.test(String(error?.message)) }))
+    const output = `${ran.stdout ?? ''}${ran.stderr ? `\n${ran.stderr}` : ''}`.trim()
+    const isMissing = 'isMissing' in ran ? ran.isMissing : onWindows && ran.exitCode === WINDOWS_COMMAND_NOT_FOUND
+    if (isMissing) return { error: { code: 'ENOENT', message: output }, output }
+    return { error: ran.exitCode === 0 ? null : { message: `exited ${ran.exitCode}` }, output }
   }
-  const answered = await proxyFetch($, options, request.method, request.path, request.body)
-  if (!answered.ok) return { isError: true as const, result: answered.error }
-  return { result: renderToolResult(tool, answered.data) }
+}
+
+async function proxyStatus($: EngineInterface, options: PluginOptions): Promise<unknown> {
+  const answered = await proxyFetch($, options, 'GET', '/proxy/status')
+  return {
+    proxy: answered.ok ? answered.data : { error: answered.error },
+    recentRecalls: (await $.store.get(RECALLS_KEY)) ?? [],
+    recentErrors: (await $.store.get(ERRORS_KEY)) ?? [],
+  }
+}
+
+function commandsFor($: EngineInterface, options: PluginOptions) {
+  return evolverCommands({
+    status: () => proxyStatus($, options),
+    search: async (text: string) => {
+      const answered = await proxyFetch($, options, 'POST', '/asset/search', { text, limit: 5 })
+      return answered.ok ? { ok: true, data: answered.data } : { ok: false, error: answered.error }
+    },
+    distillNow: async (focus: string) => distillSession($, options, await $.session.id(), focus),
+    evolveText: async () => String(await $.fs.read(`${$.plugin.root}/assets/commands/evolve.md`)),
+    followup: async (text: string) => { void quietly($, 'evolve', $.prompt.submit({ text })) },
+    runCli: (args: string[]) => runEvolverCli(args, cliRunner($)),
+  })
+}
+
+async function registerCommands($: EngineInterface, options: PluginOptions): Promise<void> {
+  for (const command of commandsFor($, options)) {
+    const hint = 'argumentHint' in command ? { argumentHint: command.argumentHint } : {}
+    await $.command.register({ name: command.name, description: command.description, ...hint })
+  }
+}
+
+async function dropRetiredStoreLedgers($: EngineInterface): Promise<void> {
+  for (const key of await $.store.keys()) if (key.startsWith('injected:')) await $.store.delete(key)
+}
+
+async function startSession($: EngineInterface, options: PluginOptions): Promise<void> {
+  const sessionId = await $.session.id()
+  await registerCommands($, options)
+  track($, 'store-ledgers', dropRetiredStoreLedgers($))
+  track($, 'turn-counters', pruneTurnCounters($))
+  track($, 'onboarding', showOnboardingNotices($, options))
+  track($, 'retention', settleRetention($, options, sessionId))
+  track($, 'orphaned', reportOrphanedInjections($, options))
+  void quietly($, 'distill', distillLeftovers($, options))
+}
+
+// `session.end` shares one short bound with every plugin's hook, so it only writes: the aborted reports wait in
+// the outbox for the next delivery, and the closed candidate for the next session start.
+async function endSession($: EngineInterface, options: PluginOptions, sessionId: string): Promise<void> {
+  const closing = Promise.all([
+    stateCall($, options, 'take-unreported', { sessionId }).then(({ assets }) => enqueueReports($, abortedReports(assets, () => sessionId))),
+    stateCall($, options, 'close-candidate', { sessionId }),
+    stateCall($, options, 'forget-session', { sessionId }),
+  ])
+  await quietly($, 'session-end', closing)
+  await $.store.delete(labelableKey(sessionId))
+  lastPrompts.delete(sessionId)
 }
 
 export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
-    for (const tool of EVOLVER_TOOLS) {
-      await $.tool.register({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
-    }
-    track($, 'onboarding', showOnboardingNotices($, options))
-    track($, 'retention', settleRetention($, options, await $.session.id()))
+    await startSession($, options)
     return next(e)
   })
 
@@ -369,6 +510,7 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e.origin)) return next(e)
     personPrompts.add(e.text)
+    lastPrompts.set(await $.session.id(), promptTextOf(e.text))
     if (e.origin?.kind === 'composer') track($, 'follow-up', reportFollowUpLabel($, options, await $.session.id(), e.text))
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -383,7 +525,6 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    if (e.tool.startsWith(TOOL_PREFIX)) return serveTool($, options, e.tool.slice(TOOL_PREFIX.length), e as Record<string, unknown>)
     noteToolUse(e as Record<string, unknown>)
     const isEdit = EDIT_TOOL_NAMES.includes(e.tool)
     if (isEdit) await noteFileBeforeEdit($, e as Record<string, unknown>)
@@ -392,9 +533,8 @@ export const register: Register = (on, options) => {
     if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), failed: verificationFailed(ran) })
     if (!isEdit || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
-    noteEditedContent(e as Record<string, unknown>)
-    const notice = signalNotice(e as Record<string, unknown>)
-    return notice ? { ...ran, context: [...(ran.context ?? []), notice] } : ran
+    noteEditedFile(e as Record<string, unknown>)
+    return ran
   }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
@@ -405,22 +545,27 @@ export const register: Register = (on, options) => {
     turnNumbers.delete(e.turnId)
     const finished = turnRecord
     turnRecord = freshTurnRecord()
-    const reports = await closeTurnReuse($, sessionId, turn, e, finished).catch(async error => {
+    const reports = await closeTurnReuse($, options, sessionId, turn, e, finished).catch(async error => {
       await recordFailure($, 'reuse-report', error)
       return []
     })
     track($, 'reuse-report', queueReports($, options, reports.map(report => ({ report, sessionId }))))
     track($, 'retention', rememberForRetention($, sessionId, reports.map(reportedReuseOf), finished.editedBefore))
+    track($, 'distill-candidate', rememberTurnCandidate($, options, sessionId, turn, e, finished, reports))
     const answered = await next(e)
     const summary = turnSummaryOf({ ...finished, lastCheck: finished.checks.at(-1), usage: e.usage })
     return summary ? { ...answered, text: summary } : answered
   })
 
+  on('command.run', async ($, e, next) => {
+    const command = commandsFor($, options).find(candidate => candidate.name === e.command)
+    if (!command) return next(e)
+    const { kind, text } = await command.handler({ rawInput: e.args })
+    return kind === 'error' ? { text, exitCode: 1 } : { text }
+  })
+
   on('session.end', async ($, e, next) => {
-    await Promise.all(pendingWork)
-    await $.store.delete(ledgerKey(e.sessionId))
-    await $.store.delete(turnCounterKey(e.sessionId))
-    await $.store.delete(labelableKey(e.sessionId))
+    await endSession($, options, e.sessionId)
     personPrompts.clear()
     turnNumbers.clear()
     abortedTurns.clear()

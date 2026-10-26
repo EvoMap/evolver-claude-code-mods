@@ -3,26 +3,21 @@
 Reference for the plugin's tools, settings and troubleshooting, then how it is built on
 Claude Code function hooks and the design decisions behind its behaviour.
 
-## Tools
+## What reaches the model
 
-Served by the plugin itself and listed as `mcp__evolver-mods__<name>`:
+Nothing of Evolver but the recalled strategy: no tools, no skill, no notice after an edit.
+Reports go out at every turn end, the session's verified work is distilled outside the
+conversation, and the commands below run in the plugin and answer in the transcript.
 
-| Tool | Purpose |
+## Commands
+
+| Command | What it does |
 |---|---|
-| `evolver_status` | Proxy state: node id, pending counts, last Hub sync. |
-| `evolver_search_assets` | Search genes, capsules, evolution events or anti-genes by signal or text. |
-| `evolver_fetch_asset` | An asset's summary, strategy steps and validation commands. |
-| `evolver_asset_reuse_result` | Report a reuse as `success` / `failed` / `mismatched` / `stale` / `unsafe`. Sent with `L5` evidence, alongside the automatic report. |
-| `evolver_distill_conversation` | Turn verified work into a reusable asset; publishing is opt-in. |
-| `evolver_publish_asset` | Queue genes or capsules for Hub review. |
-| `evolver_poll` / `evolver_ack` | Read mailbox messages, then retire them by id. |
-
-## Skill and commands
-
-A **`capability-evolver` skill** (the reuse → verify → record loop) and the commands
-**`/evolver-mods:status`**, **`/evolver-mods:search`**, **`/evolver-mods:evolve`**,
-**`/evolver-mods:distill`**, plus **`/evolver-mods:run`**, **`/evolver-mods:review`**,
-**`/evolver-mods:solidify`** and **`/evolver-mods:sync`** when `@evomap/evolver` is installed.
+| `/evolver-status` | Proxy state, plus the last recalls and background failures. |
+| `/evolver-search <text>` | Search the EvoMap network for reusable assets. |
+| `/evolver-distill [focus]` | Distill this session's latest verified turn now, instead of at the next session start. |
+| `/evolver-evolve [focus]` | Hand the agent a one-off evolution checkpoint (`assets/commands/evolve.md`). |
+| `/evolver-sync`, `/evolver-review`, `/evolver-run`, `/evolver-solidify` | Run the `evolver` CLI (installed, else `npx -y @evomap/evolver@^2.0.39`), ten minutes at most. |
 
 ## Configuration
 
@@ -61,7 +56,7 @@ Environment variables:
   `reports:outbox` until the Proxy accepts them, retried at every turn end, follow-up
   prompt and session start for 8 days; `sentAt` marks the delivered ones and
   `rejectedAt` the ones the Hub refused, with the reason beside it.
-- **Installed, but no recall, signals or turn summary.** Check
+- **Installed, but no recall or turn summary.** Check
   `claude plugin list` shows it enabled and that Claude Code is 2.1.286 or newer. Hooks
   modules of installed plugins are behind a Claude Code rollout flag
   (`tengu_plugin_hooks_modules`); a `--plugin-dir` working copy always loads them.
@@ -97,12 +92,17 @@ Installed copies update by version: bump `version` in `.claude-plugin/plugin.jso
 
 ```
 hooks/register.ts      the only file that touches `$` — every IO call lives here
-lib/*.js               pure logic (signals, recall ranking, relevance and redaction,
-                       reuse reports and their evidence, report outbox, injection
-                       ledger, follow-up labels, retention, verification, savings,
-                       turn summary, tools)
-lib/local-ledger.js    Node-only code, run by the sidecar
-bin/evolver-io.mjs     sidecar: `record-reuse`, JSON on stdin/stdout
+lib/*.js               pure logic (recall ranking, relevance and redaction, reuse
+                       reports and their evidence, report outbox,
+                       follow-up labels, retention, verification, savings, turn
+                       summary, distillation, commands)
+lib/local-ledger.js,   Node-only code, run by the sidecar
+lib/injected-assets.js,
+lib/distill-pending.js,
+lib/state-file.js,
+lib/process-owner.js
+bin/evolver-io.mjs     sidecar: `record-reuse`, the distillation candidates, the
+                       owner probe; JSON on stdin/stdout
 ```
 
 Two engine rules shape this split:
@@ -121,11 +121,11 @@ Two engine rules shape this split:
 | Recall | `prompt.submit` marks · `turn.start` recalls | `prompt.submit` knows the prompt's `origin` (`composer`, `bridge`, `sdk`, `scheduled-trigger` count as the person) but resolves only after its turn started, so the prompt is marked before `next`. `turn.start` is observe-only: the strategy is appended with `$.session.append` and reaches the model from the turn's next step. A recall slower than the wait is appended when it lands, unless the turn was interrupted. A prompt folded into a running turn is not recalled for: one recall per turn. |
 | Correction follow-up | `prompt.submit` | The next `composer` prompt after a turn is labelled once: a correction or an approval reports that turn's reuse again. |
 | Retention follow-up | `session.start` | Turns of an earlier session in the same project are judged by whether the files they edited are kept or reverted. |
-| Edit signals | `tool.call` after `next` | The notice rides the result's `context`, as a PostToolUse reminder does. |
-| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the text each edit wrote (200,000 characters a turn at most, in memory only) and each edited file's content hash before its first edit are kept for the turn too. |
-| Turn end | `turn.complete` | Subagent turns (`agentId`) are skipped. Queues a reuse report for every injection the turn saw, returns the one-line summary as `{ text }`. |
-| Session end | `session.end` | Drains pending work, forgets the session's ledger, turn counter and follow-up label. |
-| Tools | `$.tool.register` + `tool.call` | Engine keys (`tool`, `tool_use_id`, `agentId`, `consent`) are stripped before unknown arguments are refused. |
+| Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order; background runs are ignored. Commands, paths, the files each edit wrote and each edited file's content hash before its first edit are kept for the turn too. |
+| Turn end | `turn.complete` | Subagent turns (`agentId`) are skipped. Queues a reuse report for every injection the turn saw, leaves a distillation candidate when the turn qualifies, returns the one-line summary as `{ text }`. |
+| Session start | `session.start` | Registers the commands, reports the open injections of any session whose Claude Code process is gone (a resumed one's own included) as aborted, and claims and distills leftover candidates in the background. |
+| Session end | `session.end` | Only writes, since every plugin's hook shares one short bound: the injections no turn end reported go into the outbox as aborted (delivered by the next session), the candidate is closed, and the ledger and follow-up label are forgotten. The turn counter stays: `claude --resume` continues under the same session id. |
+| Commands | `$.command.register` + `command.run` | Answer with `{ text }`; `/evolver-evolve` alone submits a prompt (`$.prompt.submit`). |
 
 ## Design decisions
 
@@ -150,26 +150,21 @@ Two engine rules shape this split:
   message off screen until recall returns (3.6–5.7 s measured); that trade was declined.
 - **Reuse reports.** Every injection is reported, through the Proxy's
   `POST /asset/reuse-result`, as `{asset_id, outcome, task_id, reason, evidence}`; the
-  field names are shared with the Hub and Evolver. `reason` names the turn, the applied
-  verdict and the check kind, never the prompt, a command, code or a diff, and the
+  field names are shared with the Hub and Evolver. `reason` names the turn and the check
+  kind, never the prompt, a command, code or a diff, and the
   prompt loses keys and tokens before recall sends it.
 
   | Report | `task_id` | `evidence` |
   |---|---|---|
-  | Turn end | `claude-code:<session>:<turn>` | `tier` `L1` when a check ran, else `none`; `applied`; `check` `{kind, passed, fail_then_pass}`; `aborted`; `stage: immediate` |
-  | Next prompt corrects or approves | `…:correction` | `tier: L3`, `applied`, `stage: correction` |
-  | Next session finds the edits kept or reverted | `…:retention` | `tier: L2`, `applied`, `stage: retention` |
-  | `evolver_asset_reuse_result` | the model's own | `tier: L5`, `applied`, `stage: immediate` |
+  | Turn end | `claude-code:<session>:<turn>` | `tier` `L1` when a check ran, else `none`; `applied: used`; `check` `{kind, passed, fail_then_pass}`; `aborted`; `stage: immediate` |
+  | Next prompt corrects or approves | `…:correction` | `tier: L3`, `applied: used`, `stage: correction` |
+  | Next session finds the edits kept or reverted | `…:retention` | `tier: L2`, `applied: used`, `stage: retention` |
+  | Aborted: the session ends, or is killed, before the turn ends (a killed session's go out at the next session start, once its Claude Code process is gone) | `claude-code:<session>:<turn>` | `tier: none`, `applied: used`, `aborted: true`, `stage: immediate` |
 
-  `applied` is `used` when at least half the strategy's steps show up in the turn's
-  commands, edited paths, written code or answer, `partial` when fewer do and `unused`
-  when none do. A step shows up when a name, path or command it quotes appears, or
-  half its words do. The written code has to count: a strategy carried out in code
-  and summed up in another language shares no word with the answer. When there is
-  nothing to compare, a strategy without numbered steps or a turn that left only an
-  answer, the verdict is unknown. The Hub's contract has no such value and charges
-  `unused` a soft negative, so an unknown reuse is sent as tier `none` with `applied:
-  partial`, which weighs nothing either way, and the reason says `applied: unknown`.
+  `applied` is always `used`: the model follows a strategy injected into its turn.
+  Whether the strategy helped is what the outcome says, judged by the turn's last check
+  (or how the turn ended when it ran none), the next prompt and whether its edits were
+  kept.
   `fail_then_pass` compares checks with output trimming (`| tail -9`, `2>&1`) removed,
   so the same check piped differently is still the same check.
   The outcome follows the last check; with none it follows how the turn ended. A tier
@@ -190,14 +185,39 @@ Two engine rules shape this split:
   started it: `$.session.turns()` counts only the person's prompts, so a turn a task
   notification starts would reuse the previous number and its report would share that
   turn's task id.
-- **State.** The injection ledger, report outbox, pending retention checks, recall
-  traces and background failures live in the plugin's `$.store`.
+- **Session-end distillation.** A turn that ended answered, used tools and passed its last
+  check leaves a candidate in `~/.evolver/state/claude-code-distill-pending.json`, a turn
+  that reused an injected strategy too (the engine's intake drops a Gene that repeats one
+  it already has); a later verified turn replaces it, and a next prompt that reads as a
+  correction drops it and stops a distillation already running. One `$.model.complete` call on the session's own model writes a Gene from a
+  digest of that turn (task, commands, touched paths, checks, final answer — never the
+  whole history) and sends it to the Proxy's `POST /conversation/distill` with
+  `persist: true`, `publish: false` and its own token cost as `distill_usage`. Keys and
+  tokens are stripped from the candidate first. `session.end` shares one short
+  wall-clock bound, too short for a model call, so it closes the candidate and the next
+  session that starts claims it, one process at a time; a failed try keeps it, and three
+  give it up. A candidate whose Claude Code process is gone counts as over too, while an
+  idle session keeps its own. `/evolver-distill` does the same at once. The file is not
+  shared with other hosts: a candidate names a model only its own host can call.
+- **Owner liveness.** `$.process.run` starts the sidecar without a shell, so its parent is
+  the Claude Code process (a `node_path` that is a shim forking the real Node would break
+  this); the sidecar records that pid on every candidate and every
+  ledger entry, and probes it with signal 0 to tell a killed session from an idle one.
+- **State.** The report outbox, pending retention checks, recall traces and background
+  failures live in the plugin's `$.store`. The injection ledgers
+  (`~/.evolver/state/claude-code-injected-<hash>.json`) and the distillation candidates
+  live in state files under an exclusive lock, so two Claude Code processes cannot
+  overwrite each other's entries, report the same orphan twice or claim the same leftover
+  twice. The module orders its sidecar calls itself, so a correction's drop never lands
+  before the candidate it drops.
 - **Timeouts.** `$.http.fetch` takes neither a timeout nor an abort signal: every Proxy
   call races an 8 s `$.clock.sleep`, and an interrupted turn cannot cancel a request
   already sent.
 - **Subagents** get no recall; their checks and edits count toward the main turn.
 - **Onboarding notices** (upgrade, claim link) are toasts for the person, not model
   context.
+- **No skill.** A plugin skill's catalog line rides every turn and cannot be switched
+  off per install, so the plugin ships none.
 
 ## Engine behaviour found while testing
 
