@@ -73,7 +73,7 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
       if (!proxy.up) throw new Error('ECONNREFUSED');
       if (url.endsWith('/conversation/distill')) {
         distills.push(JSON.parse(options.body));
-        return { ok: true, status: 200, text: JSON.stringify({ id: 'gene_x' }) };
+        return { ok: true, status: 200, text: JSON.stringify({ id: 'gene_x', ok: true, status: 'stored', gene: { asset_id: 'gene_x' }, capsule: { asset_id: 'capsule_x' } }) };
       }
       if (url.endsWith('/proxy/status')) return { ok: true, status: 200, text: JSON.stringify({ running: true }) };
       reports.push(JSON.parse(options.body));

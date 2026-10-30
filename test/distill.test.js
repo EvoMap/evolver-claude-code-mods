@@ -55,7 +55,7 @@ test('a list the model wrote as one numbered paragraph becomes steps', () => {
 
 test('a candidate is distilled through the session model and sent to the Proxy with its own cost', async () => {
   const sent = [];
-  const proxyFetch = async (method, path, body) => { sent.push({ path, body }); return { ok: true, data: { id: 'gene_x' } }; };
+  const proxyFetch = async (method, path, body) => { sent.push({ path, body }); return { ok: true, data: { id: 'gene_x', ok: true, status: 'stored', gene: { asset_id: 'gene_x' }, capsule: { asset_id: 'capsule_x' } } }; };
   const candidate = candidateOf({ prompt: 'add a retry', record: record(), model: MODEL, turn: 1, now: 1 });
   const model = fakeModel();
   const outcome = await distillCandidate({ proxyFetch, complete: model.complete, candidate, timeoutMs: 1_000 });
@@ -147,4 +147,19 @@ test('keys and tokens never reach the candidate, nor the prompt a manual focus w
   });
   assert.doesNotMatch(JSON.stringify(candidate), new RegExp(secret));
   assert.doesNotMatch(distillPrompt(candidate, `Authorization: Bearer ${secret}`), new RegExp(secret));
+});
+
+test('an HTTP 200 rejection retains the candidate and its model usage for a retry', async (t) => {
+  t.after(freshHome('evolver-distill-receipt-'));
+  const candidate = candidateOf({ prompt: 'add a retry', record: record(), model: MODEL, turn: 1 });
+  rememberCandidate('receipt-rejected', candidate);
+  const outcome = await distillCandidate({
+    proxyFetch: async () => ({ ok: true, data: { ok: false, reason: 'quality_gate', status: 'rejected' } }),
+    complete: fakeModel().complete, candidate, timeoutMs: 1_000,
+  });
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.error, 'quality_gate');
+  assert.ok(outcome.usage);
+  settleCandidate('receipt-rejected', candidate, { sent: outcome.status === 'sent' });
+  assert.equal(dueCandidates({ sessionId: 'receipt-rejected' })[0].candidate.attempts, 1);
 });
