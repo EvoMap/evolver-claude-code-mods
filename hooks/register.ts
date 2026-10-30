@@ -60,7 +60,9 @@ const freshTurnRecord = (): TurnRecord => ({
 })
 
 let turnRecord: TurnRecord = freshTurnRecord()
-const personPrompts = new Set<string>()
+type PreparedPrompt = { match: RecallMatch | null }
+const preparedPrompts = new Map<string, PreparedPrompt[]>()
+const promptKey = (sessionId: string, text: string) => JSON.stringify([sessionId, text])
 const turnNumbers = new Map<string, number>()
 const abortedTurns = new Set<string>()
 const distillations = new Map<string, { outcome: Promise<DistillOutcome>; controller: AbortController }>()
@@ -225,39 +227,49 @@ async function showOnboardingNotices($: EngineInterface, options: PluginOptions)
   }
 }
 
-async function injectStrategy($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, match: RecallMatch): Promise<void> {
+async function rememberStrategy($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, match: RecallMatch): Promise<void> {
   if (!match.text) return
   turnRecord.reusedNames.push(match.name ?? match.ids.join(', '))
   await stateCall($, options, 'remember-injected', { sessionId, assetIds: match.ids, turn, strategyText: match.text })
-  await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: match.text }] } })
 }
 
-// `turn.start` observes and holds no model call, so whatever this appends
-// reaches the model from the turn's next step; the wait only decides whether
-// the append happens here or once a slower recall lands in the background.
-// Assets this session already saw are read off the ledger, so a hot reload does
-// not re-inject them.
-async function recallForTurn($: EngineInterface, options: PluginOptions, sessionId: string, turn: number, turnId: string, prompt: string, signal: AbortSignal): Promise<void> {
-  if (options.recall_enabled === false) return
+// prompt.submit gates entry into the session. Resolve recall before next(),
+// then attach its context to the original prompt. turn.start is only an
+// observer and cannot put session.append into an already assembled request.
+// A late result is discarded, never appended into an unrelated later step.
+async function recallForPrompt($: EngineInterface, options: PluginOptions, sessionId: string, prompt: string, signal: AbortSignal): Promise<RecallMatch | null> {
+  if (options.recall_enabled === false || signal.aborted) return null
   const listedIds = new Set<string>((await stateCall($, options, 'listed-assets', { sessionId })).ids)
   const startedAt = await $.clock.now()
+  let accepting = true
   const recall: Promise<RecallMatch> = recallStrategy(proxyFetcher($, options), promptTextOf(prompt), {
     listedIds,
     minSimilarity: Number(options.recall_min_similarity ?? 0.3),
     onTrace: (trace: unknown) => {
+      if (!accepting) return
       showRecallStatus($, recallStatusOf(trace))
       track($, 'recall-trace', recordRecall($, prompt, startedAt, trace))
     },
   })
   const waitMs = Number(options.recall_wait_ms ?? 6_000)
-  const inline = await Promise.race([recall, $.clock.sleep(waitMs).then(() => null)])
-  if (signal.aborted) return
-  if (inline) return injectStrategy($, options, sessionId, turn, inline)
-  showRecallStatus($, recallStatusOf({ outcome: 'waiting', waitedMs: waitMs }))
-  track($, 'late-recall', recall.then(late => {
-    if (!abortedTurns.has(turnId)) return injectStrategy($, options, sessionId, turn, late)
-    if (late.text) showRecallStatus($, recallStatusOf({ outcome: 'dropped' }))
-  }))
+  let onAbort: () => void = () => {}
+  const aborted = new Promise<null>(resolve => {
+    onAbort = () => resolve(null)
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) onAbort()
+  })
+  let inline: RecallMatch | null
+  try {
+    inline = await Promise.race([recall, $.clock.sleep(waitMs).then(() => null), aborted])
+  } finally {
+    accepting = false
+    signal.removeEventListener('abort', onAbort)
+  }
+  if (signal.aborted) return null
+  if (inline) return inline
+  showRecallStatus($, recallStatusOf({ outcome: 'dropped' }))
+  track($, 'recall-timeout', recordRecall($, prompt, startedAt, { outcome: 'timeout', waitedMs: waitMs }))
+  return null
 }
 
 function writeOutbox($: EngineInterface, change: (outbox: any, now: number) => unknown): Promise<unknown> {
@@ -504,22 +516,43 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // `prompt.submit` knows who sent the prompt but resolves only after its turn
-  // started, so the person's prompt is marked before `next`; `turn.start` then
-  // recalls for it. A prompt folded into a running turn starts no turn.
+  // Context must go DOWN with the prompt, before next() enters it. Putting it
+  // on the returned result or session.append from turn.start is too late.
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e.origin)) return next(e)
-    personPrompts.add(e.text)
-    lastPrompts.set(await $.session.id(), promptTextOf(e.text))
-    if (e.origin?.kind === 'composer') track($, 'follow-up', reportFollowUpLabel($, options, await $.session.id(), e.text))
-    return next(e)
-  }).catch(($, e, next) => next(e))
+    const sessionId = await $.session.id()
+    lastPrompts.set(sessionId, promptTextOf(e.text))
+    if (e.origin?.kind === 'composer') track($, 'follow-up', reportFollowUpLabel($, options, sessionId, e.text))
+    const match = await recallForPrompt($, options, sessionId, e.text, next.signal).catch(async error => {
+      await recordFailure($, 'recall', error)
+      return null
+    })
+    const key = promptKey(sessionId, e.text)
+    const prepared: PreparedPrompt = { match }
+    const pending = preparedPrompts.get(key) ?? []
+    pending.push(prepared)
+    preparedPrompts.set(key, pending)
+    try {
+      // Preserve text, attachments and other plugins' context. Do not retry next()
+      // if the host fails after accepting this prompt.
+      return await next(match?.text ? { ...e, context: [...(e.context ?? []), match.text] } : e)
+    } finally {
+      // A rejected prompt, or one folded into a running turn, starts no turn.
+      const remaining = preparedPrompts.get(key)?.filter(item => item !== prepared) ?? []
+      if (remaining.length) preparedPrompts.set(key, remaining)
+      else preparedPrompts.delete(key)
+    }
+  })
 
   on('turn.start', async ($, e, next) => {
-    if (personPrompts.delete(e.text)) {
-      const sessionId = await $.session.id()
+    const sessionId = await $.session.id()
+    const key = promptKey(sessionId, e.text)
+    const pending = preparedPrompts.get(key)
+    const prepared = pending?.shift()
+    if (!pending?.length) preparedPrompts.delete(key)
+    if (prepared) {
       const turn = await turnNumberFor($, sessionId, e.turnId)
-      await recallForTurn($, options, sessionId, turn, e.turnId, e.text, next.signal).catch(error => recordFailure($, 'recall', error))
+      if (prepared.match) await rememberStrategy($, options, sessionId, turn, prepared.match).catch(error => recordFailure($, 'remember-injected', error))
     }
     return next(e)
   })
@@ -566,7 +599,7 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     await endSession($, options, e.sessionId)
-    personPrompts.clear()
+    for (const key of preparedPrompts.keys()) if (JSON.parse(key)[0] === e.sessionId) preparedPrompts.delete(key)
     turnNumbers.clear()
     abortedTurns.clear()
     return next(e)
