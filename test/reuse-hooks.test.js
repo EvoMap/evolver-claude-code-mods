@@ -45,7 +45,7 @@ function deadPid() {
   return spawnSync(process.execPath, ['-e', '']).pid;
 }
 
-function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}) {
+function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')), recallHold = null, recallEnabled = true, abortSignal, sleep = () => new Promise(() => {}) } = {}) {
   const files = new Map([['/proj/lib/redis.js', 'export const retries = 3;\n']]);
   const stored = new Map();
   const reports = [];
@@ -54,6 +54,8 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
   const prompts = [];
   const commands = [];
   const sidecarRuns = [];
+  const appends = [];
+  const fetches = [];
   const model = { answer: JSON.stringify(GENE), hold: null };
   const proxy = { up: true, answer: { recorded: true } };
   let sessionId = 's1';
@@ -69,7 +71,11 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
       stat: async (path) => ({ realPath: path }),
     },
     http: { fetch: async (url, options) => {
-      if (url.endsWith('/asset/fetch')) return { ok: true, status: 200, text: JSON.stringify({ assets: [asset] }) };
+      if (url.endsWith('/asset/fetch')) {
+        fetches.push(JSON.parse(options.body));
+        await recallHold;
+        return { ok: true, status: 200, text: JSON.stringify({ assets: asset ? [asset] : [] }) };
+      }
       if (!proxy.up) throw new Error('ECONNREFUSED');
       if (url.endsWith('/conversation/distill')) {
         distills.push(JSON.parse(options.body));
@@ -79,14 +85,14 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
       reports.push(JSON.parse(options.body));
       return { ok: true, status: 200, text: JSON.stringify(proxy.answer) };
     } },
-    clock: { now: async () => Date.now(), sleep: () => new Promise(() => {}) },
+    clock: { now: async () => Date.now(), sleep },
     store: {
       get: async (key) => stored.get(key),
       set: async (key, value) => { stored.set(key, JSON.parse(JSON.stringify(value))); },
       delete: async (key) => stored.delete(key),
       keys: async () => [...stored.keys()],
     },
-    session: { id: async () => sessionId, cwd: async () => '/proj', append: async () => {}, model: async () => 'claude-test-model' },
+    session: { id: async () => sessionId, cwd: async () => '/proj', append: async (value) => { appends.push(value); }, model: async () => 'claude-test-model' },
     model: { complete: async (request, init) => {
       completions.push(request);
       await model.hold;
@@ -104,21 +110,73 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
     } },
   };
   const handlers = new Map();
-  register((event, handler) => { handlers.set(event, handler); return { catch() {} }; }, { recall_wait_ms: 1000 });
-  const signal = new AbortController().signal;
+  register((event, handler) => { handlers.set(event, handler); return { catch() {} }; }, { recall_wait_ms: 1000, recall_enabled: recallEnabled });
+  const signal = abortSignal ?? new AbortController().signal;
   const call = (event, input = {}, answer = (value) => value) => handlers.get(event)($, input, Object.assign(async (value) => answer(value), { signal }));
   const sidecar = (command, request = {}) => JSON.parse(runSidecar(command, JSON.stringify(request), home).stdout);
   const writeLedger = (sessionId, ledger) => {
     mkdirSync(join(home, '.evolver', 'state'), { recursive: true });
     writeFileSync(join(home, '.evolver', 'state', hashedName('claude-code-injected', sessionId)), JSON.stringify(ledger));
   };
-  return { writeLedger, files, reports, distills, completions, prompts, commands, model, sidecarRuns, proxy, stored, call, sidecar, useSession: (id) => { sessionId = id; } };
+  return { writeLedger, files, reports, distills, completions, prompts, commands, model, sidecarRuns, appends, fetches, proxy, stored, call, sidecar, useSession: (id) => { sessionId = id; } };
 }
+
+test('the first model boundary receives recalled context before turn.start; original prompt stays intact', async () => {
+  const f = engine();
+  await f.call('session.start');
+  const input = { text: PROMPT, context: ['another plugin context'], attachments: [{ type: 'image' }], origin: { kind: 'sdk' } };
+  let firstRequest;
+  await f.call('prompt.submit', input, async (entered) => {
+    firstRequest = entered;
+    await f.call('turn.start', { text: entered.text, turnId: 'first-request-regression' });
+    return entered;
+  });
+  assert.equal(firstRequest.text, input.text);
+  assert.deepEqual(firstRequest.attachments, input.attachments);
+  assert.deepEqual(input.context, ['another plugin context'], 'the input is not mutated');
+  assert.equal(firstRequest.context[0], 'another plugin context');
+  assert.match(firstRequest.context[1], /Set `maxRetriesPerRequest` to null/);
+  assert.equal(f.fetches.length, 1, 'turn.start must not fetch a second strategy');
+  assert.deepEqual(f.appends, [], 'no late session append');
+});
+
+test('a recall miss passes the original prompt and existing context through unchanged', async () => {
+  const f = engine({ asset: null });
+  const input = { text: PROMPT, context: ['keep me'], origin: { kind: 'sdk' } };
+  assert.equal(await f.call('prompt.submit', input), input);
+  assert.deepEqual(f.appends, []);
+});
+
+test('disabled recall and non-person prompts never fetch or inject', async () => {
+  const disabled = engine({ recallEnabled: false });
+  const input = { text: PROMPT, origin: { kind: 'sdk' } };
+  assert.equal(await disabled.call('prompt.submit', input), input);
+  assert.equal(disabled.fetches.length, 0);
+  const f = engine();
+  const notification = { text: PROMPT, origin: { kind: 'plugin', plugin: 'another' } };
+  assert.equal(await f.call('prompt.submit', notification), notification);
+  assert.equal(f.fetches.length, 0);
+});
+
+test('recall timeout proceeds without context and a late strategy never leaks into a later step', async () => {
+  let release;
+  const recallHold = new Promise((resolve) => { release = resolve; });
+  const f = engine({ recallHold, sleep: (ms) => ms === 1000 ? Promise.resolve() : new Promise(() => {}) });
+  const input = { text: PROMPT, context: ['existing'], origin: { kind: 'sdk' } };
+  assert.equal(await f.call('prompt.submit', input), input);
+  release();
+  await settle();
+  await f.call('turn.start', { text: PROMPT, turnId: 'late-result-regression' });
+  assert.deepEqual(f.appends, []);
+  assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, []);
+});
 
 async function injectedTurn(f, { checks = [], edit = false, reason = 'answer' } = {}) {
   const turnId = `t${++turnIds}`;
-  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'composer' } });
-  await f.call('turn.start', { text: PROMPT, turnId });
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'composer' } }, async entered => {
+    await f.call('turn.start', { text: PROMPT, turnId });
+    return entered;
+  });
   if (edit) {
     await f.call('tool.call', { tool: 'Edit', file_path: '/proj/lib/redis.js', old_string: '3', new_string: 'null' }, () => {
       f.files.set('/proj/lib/redis.js', 'export const retries = null;\n');
@@ -206,12 +264,14 @@ test('edits still in place by the next session send one L2 retention follow-up',
   const f = engine();
   await f.call('session.start');
   await injectedTurn(f, { edit: true, checks: [{ command: 'npm test', failed: false }] });
+  await until(() => (f.stored.get('retention:pending') ?? []).length === 1, 'the edited file was recorded for retention');
   await f.call('session.end', { sessionId: 's1' });
   f.useSession('s2');
   await f.call('session.start');
   await settle();
   await f.call('session.start');
   await settle();
+  await until(() => f.reports.some((report) => report.evidence.stage === 'retention'), 'the retention report was delivered');
   const retention = f.reports.filter((report) => report.evidence.stage === 'retention');
   assert.equal(retention.length, 1);
   assert.equal(retention[0].task_id, 'claude-code:s1:1:retention');
@@ -277,8 +337,10 @@ const LRU_ASSET = {
 test('a strategy written into code and proven by a check that first failed is reported as used, L1, fail then pass', async () => {
   const f = engine({ asset: LRU_ASSET });
   await f.call('session.start');
-  await f.call('prompt.submit', { text: LRU_PROMPT, origin: { kind: 'composer' } });
-  await f.call('turn.start', { text: LRU_PROMPT, turnId: 'lru' });
+  await f.call('prompt.submit', { text: LRU_PROMPT, origin: { kind: 'composer' } }, async entered => {
+    await f.call('turn.start', { text: LRU_PROMPT, turnId: 'lru' });
+    return entered;
+  });
   const [testFile, implementation] = LRU_TURN.edits;
   const [before, after] = LRU_TURN.commands;
   await f.call('tool.call', { tool: 'Write', file_path: LRU_TURN.paths[0], content: testFile }, () => ({ result: 'ok' }));
@@ -307,8 +369,10 @@ const plainAsset = { ...ASSET, strategy: ['Read the logs.', 'Bisect the change.'
 
 async function verifiedTurn(f, prompt = 'add a retry to the uploader please') {
   const turnId = `t${++turnIds}`;
-  await f.call('prompt.submit', { text: prompt, origin: { kind: 'composer' } });
-  await f.call('turn.start', { text: prompt, turnId });
+  await f.call('prompt.submit', { text: prompt, origin: { kind: 'composer' } }, async entered => {
+    await f.call('turn.start', { text: prompt, turnId });
+    return entered;
+  });
   await f.call('tool.call', { tool: 'Bash', command: 'npm test' }, () => ({ result: 'pass 3' }));
   await f.call('turn.complete', { turnId, reason: 'answer', answer: 'Retries added.', isAborted: false, durationMs: 1 });
   await settle();
@@ -410,8 +474,10 @@ test('a failed distillation keeps the candidate for the next try and gives up af
 test('a strategy whose turn never ended is reported aborted when the session ends', async () => {
   const f = engine();
   await f.call('session.start');
-  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'composer' } });
-  await f.call('turn.start', { text: PROMPT, turnId: 'cut' });
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'composer' } }, async entered => {
+    await f.call('turn.start', { text: PROMPT, turnId: 'cut' });
+    return entered;
+  });
   await f.call('session.end', { sessionId: 's1' });
   assert.equal(f.reports.length, 0, 'session end only writes the outbox');
   assert.equal(Object.keys(f.stored.get('reports:outbox')).length, 1);
@@ -476,8 +542,10 @@ test('a correction right after the answer drops the candidate the turn just wrot
   const f = engine({ asset: plainAsset });
   await f.call('session.start');
   const turnId = `t${++turnIds}`;
-  await f.call('prompt.submit', { text: 'add a retry to the uploader please', origin: { kind: 'composer' } });
-  await f.call('turn.start', { text: 'add a retry to the uploader please', turnId });
+  await f.call('prompt.submit', { text: 'add a retry to the uploader please', origin: { kind: 'composer' } }, async entered => {
+    await f.call('turn.start', { text: 'add a retry to the uploader please', turnId });
+    return entered;
+  });
   await f.call('tool.call', { tool: 'Bash', command: 'npm test' }, () => ({ result: 'pass 3' }));
   await f.call('turn.complete', { turnId, reason: 'answer', answer: 'Retries added.', isAborted: false, durationMs: 1 });
   await f.call('prompt.submit', { text: '不对，这样不行', origin: { kind: 'composer' } });
@@ -512,4 +580,65 @@ test('a turn counter untouched for a month is pruned; a recent one and an older-
   assert.ok(f.stored.has('turns:recent'));
   await injectedTurn(f);
   await until(() => f.reports.some((report) => report.task_id === 'claude-code:s1:4'), 'an older-format counter keeps counting');
+});
+
+test('cancellation releases a waiting prompt without injecting a late result', async () => {
+  const controller = new AbortController();
+  let release;
+  const f = engine({ abortSignal: controller.signal, recallHold: new Promise(resolve => { release = resolve; }) });
+  const input = { text: PROMPT, origin: { kind: 'sdk' } };
+  const pending = f.call('prompt.submit', input);
+  controller.abort();
+  assert.equal(await pending, input);
+  release();
+  await settle();
+  assert.deepEqual(f.appends, []);
+  assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, []);
+});
+
+test('a dropped or folded prompt does not leave a strategy for a later same-text turn', async () => {
+  const f = engine();
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'sdk' } }, () => ({ drop: 'rejected' }));
+  await f.call('turn.start', { text: PROMPT, turnId: 'not-the-dropped-prompt' });
+  assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, []);
+});
+
+test('equal prompt text in another session cannot consume pending recall', async () => {
+  const f = engine();
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'sdk' } }, async entered => {
+    f.useSession('s2');
+    await f.call('turn.start', { text: PROMPT, turnId: 'other-session' });
+    assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's2' }).ids, []);
+    f.useSession('s1');
+    await f.call('turn.start', { text: PROMPT, turnId: 'own-session' });
+    assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, [ASSET.asset_id]);
+    return entered;
+  });
+});
+
+test('repeating the same prompt after injection does not inject the asset twice', async () => {
+  const f = engine();
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'sdk' } }, async value => {
+    await f.call('turn.start', { text: PROMPT, turnId: 'first-identical-prompt' });
+    return value;
+  });
+  const repeated = await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'sdk' } }, async value => {
+    await f.call('turn.start', { text: PROMPT, turnId: 'second-identical-prompt' });
+    return value;
+  });
+  assert.equal(repeated.context, undefined);
+  assert.equal(f.fetches.length, 2);
+  assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, [ASSET.asset_id]);
+});
+
+test('a downstream host error never submits the same prompt twice', async () => {
+  const f = engine();
+  let calls = 0;
+  await assert.rejects(f.call('prompt.submit', { text: PROMPT, origin: { kind: 'sdk' } }, () => {
+    calls++;
+    throw new Error('host failed after accepting');
+  }), /host failed after accepting/);
+  assert.equal(calls, 1);
+  await f.call('turn.start', { text: PROMPT, turnId: 'after-host-error' });
+  assert.deepEqual(f.sidecar('listed-assets', { sessionId: 's1' }).ids, []);
 });
