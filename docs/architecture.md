@@ -119,6 +119,7 @@ Two engine rules shape this split:
 | Concern | Claude Code event | Notes |
 |---|---|---|
 | Recall | `prompt.submit` marks · `turn.start` recalls | `prompt.submit` knows the prompt's `origin` (`composer`, `bridge`, `sdk`, `scheduled-trigger` count as the person) but resolves only after its turn started, so the prompt is marked before `next`. `turn.start` is observe-only: the strategy is appended with `$.session.append` and reaches the model from the turn's next step. A recall slower than the wait is appended when it lands, unless the turn was interrupted. A prompt folded into a running turn is not recalled for: one recall per turn. |
+| Stuck recall | `tool.call` on a failed check | The first failed check of each distinct failure (two per turn at most, main loop only) recalls again with a query built from what it printed: the files' language, the identifiers the turn's edits introduced, the error lines, the failing tests and the files' base names, secrets redacted. A strategy is returned in the failed call's result `context`, which the model reads next and the person never sees; one slower than the recall wait is dropped. |
 | Correction follow-up | `prompt.submit` | The next `composer` prompt after a turn is labelled once: a correction or an approval reports that turn's reuse again. |
 | Retention follow-up | `session.start` | Turns of an earlier session in the same project are judged by whether the files they edited are kept or reverted. |
 | Checks | `tool.call` on Bash | Every test, build, lint and type-check command of the turn, in order, read from its command lines (a heredoc body is data); background runs are ignored. The turn summary names a check by the call's one-line `description`, else its first command line. Commands, paths, the files each edit wrote and each edited file's content hash before its first edit are kept for the turn too. |
@@ -140,6 +141,14 @@ Two engine rules shape this split:
   A strategy that would inject more than 4000 characters is passed over. Two off-topic
   hits still score exactly 2 (meta questions sharing words like `replay` and `review`),
   the same as an on-topic Redis fix, so the gate alone cannot separate them.
+- **Task context.** Every recall sends the session's first prompt (1500 characters,
+  cleaned as a prompt is) as `context` beside the recall `text`. The Hub uses it only to
+  judge each recalled asset's fit to the task, not to recall, and the local relevance
+  gate counts the terms the asset shares with either. The first 400 characters of a
+  prompt are often its boilerplate opening, and an error line alone names no task; an
+  offline replay of 53 SWE runs (EvoMap/evolver-claude-code-mods#11) fired on 15 failed
+  checks; judged with the task and the failure together, the Gene distilled for the task
+  ranked first in all 14 pools that held it.
 - **Estimated savings.** The turn summary claims a saving only when the turn's last
   check passed, and never more than the fresh tokens (input, cache writes, output) the
   turn spent: evolver-core's estimator prices deriving a whole approach from scratch,

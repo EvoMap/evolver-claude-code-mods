@@ -45,10 +45,11 @@ function deadPid() {
   return spawnSync(process.execPath, ['-e', '']).pid;
 }
 
-function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}) {
+function engine({ asset = ASSET, assetFor = () => asset, home = mkdtempSync(join(stage, 'home-')) } = {}) {
   const files = new Map([['/proj/lib/redis.js', 'export const retries = 3;\n']]);
   const stored = new Map();
   const reports = [];
+  const recalls = [];
   const distills = [];
   const completions = [];
   const prompts = [];
@@ -69,7 +70,11 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
       stat: async (path) => ({ realPath: path }),
     },
     http: { fetch: async (url, options) => {
-      if (url.endsWith('/asset/fetch')) return { ok: true, status: 200, text: JSON.stringify({ assets: [asset] }) };
+      if (url.endsWith('/asset/fetch')) {
+        const recall = JSON.parse(options.body);
+        recalls.push(recall);
+        return { ok: true, status: 200, text: JSON.stringify({ assets: [assetFor(recall)] }) };
+      }
       if (!proxy.up) throw new Error('ECONNREFUSED');
       if (url.endsWith('/conversation/distill')) {
         distills.push(JSON.parse(options.body));
@@ -112,7 +117,7 @@ function engine({ asset = ASSET, home = mkdtempSync(join(stage, 'home-')) } = {}
     mkdirSync(join(home, '.evolver', 'state'), { recursive: true });
     writeFileSync(join(home, '.evolver', 'state', hashedName('claude-code-injected', sessionId)), JSON.stringify(ledger));
   };
-  return { writeLedger, files, reports, distills, completions, prompts, commands, model, sidecarRuns, proxy, stored, call, sidecar, useSession: (id) => { sessionId = id; } };
+  return { writeLedger, files, reports, recalls, distills, completions, prompts, commands, model, sidecarRuns, proxy, stored, call, sidecar, useSession: (id) => { sessionId = id; } };
 }
 
 async function injectedTurn(f, { checks = [], edit = false, reason = 'answer' } = {}) {
@@ -512,4 +517,59 @@ test('a turn counter untouched for a month is pruned; a recent one and an older-
   assert.ok(f.stored.has('turns:recent'));
   await injectedTurn(f);
   await until(() => f.reports.some((report) => report.task_id === 'claude-code:s1:4'), 'an older-format counter keeps counting');
+});
+
+const STUCK_ASSET = {
+  asset_id: 'sha256:' + 'b'.repeat(64),
+  short_title: 'Retry assertions on a null retry budget',
+  summary: 'An AssertionError on retry counts after maxRetriesPerRequest is null means the test pins the old budget',
+  signals_match: ['AssertionError', 'maxRetriesPerRequest', 'retry'],
+  strategy: [
+    'Read the assertion that pins the retry count',
+    'Compare it with the client option the change introduced',
+    'Update the expectation to the null budget, not the client',
+    'Rerun only the failing test before the suite',
+  ],
+};
+const FAILED_RUN = { result: 'failed', text: 'FAILED tests/test_redis.py::test_retry - AssertionError: expected 3 retries', isError: true };
+
+async function stuckTurn(f) {
+  const turnId = `t${++turnIds}`;
+  await f.call('prompt.submit', { text: PROMPT, origin: { kind: 'composer' } });
+  await f.call('turn.start', { text: PROMPT, turnId });
+  await f.call('tool.call', { tool: 'Edit', file_path: '/proj/lib/redis.js', old_string: 'retries = 3', new_string: 'maxRetriesPerRequest = null' }, () => ({ result: 'ok' }));
+  return () => f.call('turn.complete', { turnId, reason: 'answer', answer: 'done', isAborted: false, durationMs: 1 });
+}
+
+test('a failed check recalls for what it printed, beside the session task, into the result the model reads next', async () => {
+  const f = engine({ assetFor: (recall) => (/AssertionError/.test(recall.text) ? STUCK_ASSET : ASSET) });
+  await f.call('session.start');
+  const completeTurn = await stuckTurn(f);
+
+  const ran = await f.call('tool.call', { tool: 'Bash', command: 'pytest tests/test_redis.py' }, () => FAILED_RUN);
+
+  assert.deepEqual(f.recalls.map((recall) => recall.context), [PROMPT, PROMPT]);
+  assert.match(f.recalls[1].text, /^language: JavaScript \| changed: maxRetriesPerRequest \| .*AssertionError: expected 3 retries.* \| files: redis\.js$/);
+  assert.equal(ran.result, 'failed');
+  assert.equal(ran.context.length, 1);
+  assert.match(ran.context[0], /^\[Evolution Memory\] Retry assertions on a null retry budget/);
+  assert.match(ran.context[0], /Update the expectation to the null budget/);
+  await completeTurn();
+  await settle();
+});
+
+test('the same failure again, a passing check, or recall turned off recalls nothing more', async () => {
+  const f = engine({ assetFor: (recall) => (/AssertionError/.test(recall.text) ? STUCK_ASSET : ASSET) });
+  await f.call('session.start');
+  const completeTurn = await stuckTurn(f);
+  await f.call('tool.call', { tool: 'Bash', command: 'pytest tests/test_redis.py' }, () => FAILED_RUN);
+
+  const again = await f.call('tool.call', { tool: 'Bash', command: 'pytest tests/test_redis.py' }, () => FAILED_RUN);
+  const passed = await f.call('tool.call', { tool: 'Bash', command: 'pytest tests/test_redis.py' }, () => ({ result: 'ok', text: '3 passed' }));
+
+  assert.equal(f.recalls.length, 2);
+  assert.equal(again.context, undefined);
+  assert.equal(passed.context, undefined);
+  await completeTurn();
+  await settle();
 });

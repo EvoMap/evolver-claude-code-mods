@@ -5,12 +5,13 @@ import { candidateOf, distillCandidate, skipReason } from '../lib/distill.js'
 import { EDIT_TOOL_NAMES, changedLinesOf, editedPath } from '../lib/edited-content.js'
 import { feedbackLabelOf } from '../lib/feedback-label.js'
 import { noticeDecision, pendingClaimUrl, upgradeNoticeText, versionOf, versionProbeArgv } from '../lib/onboarding.js'
-import { isPersonPrompt, promptTextOf, recallStrategy } from '../lib/recall.js'
+import { isPersonPrompt, promptTextOf, recallStrategy, taskTextOf } from '../lib/recall.js'
 import { DEFAULT_PROXY_PORT, proxyResultOf, proxySettingsFrom, timedOutResult, unreachableResult } from '../lib/proxy-response.js'
 import { OUTBOX_TTL_MS, withQueued } from '../lib/report-outbox.js'
 import { ABSENT, retentionOf } from '../lib/retention.js'
 import { correctionReportOf, deliverPending, immediateReportOf, reportedReuseOf, retentionReportOf } from '../lib/reuse.js'
 import { recallStatusOf, statusLineOf } from '../lib/status-line.js'
+import { addedIdentifiersOf, stuckQueryOf } from '../lib/stuck-query.js'
 import { turnSummaryOf } from '../lib/turn-summary.js'
 import { outcomeOfReason } from '../lib/turn-outcomes.js'
 import { checkCommandOf, checkLabelOf, verificationFailed } from '../lib/verification.js'
@@ -18,12 +19,15 @@ import { checkCommandOf, checkLabelOf, verificationFailed } from '../lib/verific
 type ProxyResult = { ok: true; data: any } | { ok: false; error: string }
 type Check = { command: string; label: string; failed: boolean }
 type TurnRecord = {
+  turn?: number
   reusedNames: string[]
   changedLines: number
   checks: Check[]
   commands: string[]
   paths: string[]
   edits: string[]
+  addedIdentifiers: string[]
+  stuckQueries: string[]
   editedBefore: Map<string, string>
 }
 type Report = ReturnType<typeof immediateReportOf>
@@ -48,6 +52,7 @@ const OUTBOX_KEY = 'reports:outbox'
 const RETENTION_KEY = 'retention:pending'
 const PATH_KEYS = ['file_path', 'notebook_path', 'path']
 const WINDOWS_COMMAND_NOT_FOUND = 9009
+const MAX_STUCK_RECALLS_PER_TURN = 2
 
 const freshTurnRecord = (): TurnRecord => ({
   reusedNames: [],
@@ -56,6 +61,8 @@ const freshTurnRecord = (): TurnRecord => ({
   commands: [],
   paths: [],
   edits: [],
+  addedIdentifiers: [],
+  stuckQueries: [],
   editedBefore: new Map(),
 })
 
@@ -65,6 +72,7 @@ const turnNumbers = new Map<string, number>()
 const abortedTurns = new Set<string>()
 const distillations = new Map<string, { outcome: Promise<DistillOutcome>; controller: AbortController }>()
 const lastPrompts = new Map<string, string>()
+const sessionTasks = new Map<string, string>()
 let outboxWork: Promise<unknown> = Promise.resolve()
 let outboxWrites: Promise<unknown> = Promise.resolve()
 let stateWork: Promise<unknown> = Promise.resolve()
@@ -242,6 +250,7 @@ async function recallForTurn($: EngineInterface, options: PluginOptions, session
   const listedIds = new Set<string>((await stateCall($, options, 'listed-assets', { sessionId })).ids)
   const startedAt = await $.clock.now()
   const recall: Promise<RecallMatch> = recallStrategy(proxyFetcher($, options), promptTextOf(prompt), {
+    context: sessionTasks.get(sessionId) ?? '',
     listedIds,
     minSimilarity: Number(options.recall_min_similarity ?? 0.3),
     onTrace: (trace: unknown) => {
@@ -258,6 +267,40 @@ async function recallForTurn($: EngineInterface, options: PluginOptions, session
     if (!abortedTurns.has(turnId)) return injectStrategy($, options, sessionId, turn, late)
     if (late.text) showRecallStatus($, recallStatusOf({ outcome: 'dropped' }))
   }))
+}
+
+// A failed check is where the agent most needs a fact it lacks, and its output names the problem far better than the
+// prompt's opening lines, so it is recalled for once per distinct failure. The strategy rides in the failed call's
+// result context, which the model reads next and the person never sees; a recall that misses the wait is dropped,
+// since by then the agent has moved on.
+async function recallWhenStuck($: EngineInterface, options: PluginOptions, record: TurnRecord, output: string): Promise<string> {
+  const { turn } = record
+  if (options.recall_enabled === false || turn === undefined || record.stuckQueries.length >= MAX_STUCK_RECALLS_PER_TURN) return ''
+  const query = stuckQueryOf({ output, paths: record.paths, addedIdentifiers: record.addedIdentifiers })
+  if (!query || record.stuckQueries.includes(query)) return ''
+  record.stuckQueries.push(query)
+  const sessionId = await $.session.id()
+  const listedIds = new Set<string>((await stateCall($, options, 'listed-assets', { sessionId })).ids)
+  const startedAt = await $.clock.now()
+  const recall: Promise<RecallMatch> = recallStrategy(proxyFetcher($, options), query, {
+    context: sessionTasks.get(sessionId) ?? '',
+    listedIds,
+    minSimilarity: Number(options.recall_min_similarity ?? 0.3),
+    onTrace: (trace: unknown) => track($, 'stuck-recall-trace', recordRecall($, `stuck: ${query}`, startedAt, trace)),
+  })
+  const match = await Promise.race([recall, $.clock.sleep(Number(options.recall_wait_ms ?? 6_000)).then(() => null)])
+  if (!match?.text) return ''
+  record.reusedNames.push(match.name ?? match.ids.join(', '))
+  await stateCall($, options, 'remember-injected', { sessionId, assetIds: match.ids, turn, strategyText: match.text })
+  return match.text
+}
+
+async function withStuckRecall<T extends { text?: unknown; context?: readonly string[] }>($: EngineInterface, options: PluginOptions, ran: T): Promise<T> {
+  const strategy = await recallWhenStuck($, options, turnRecord, String(ran.text ?? '')).catch(async error => {
+    await recordFailure($, 'stuck-recall', error)
+    return ''
+  })
+  return strategy ? { ...ran, context: [...(ran.context ?? []), strategy] } : ran
 }
 
 function writeOutbox($: EngineInterface, change: (outbox: any, now: number) => unknown): Promise<unknown> {
@@ -496,6 +539,7 @@ async function endSession($: EngineInterface, options: PluginOptions, sessionId:
   await quietly($, 'session-end', closing)
   await $.store.delete(labelableKey(sessionId))
   lastPrompts.delete(sessionId)
+  sessionTasks.delete(sessionId)
 }
 
 export const register: Register = (on, options) => {
@@ -510,7 +554,9 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     if (!isPersonPrompt(e.origin)) return next(e)
     personPrompts.add(e.text)
-    lastPrompts.set(await $.session.id(), promptTextOf(e.text))
+    const sessionId = await $.session.id()
+    lastPrompts.set(sessionId, promptTextOf(e.text))
+    if (!sessionTasks.has(sessionId) && taskTextOf(e.text)) sessionTasks.set(sessionId, taskTextOf(e.text))
     if (e.origin?.kind === 'composer') track($, 'follow-up', reportFollowUpLabel($, options, await $.session.id(), e.text))
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -519,6 +565,7 @@ export const register: Register = (on, options) => {
     if (personPrompts.delete(e.text)) {
       const sessionId = await $.session.id()
       const turn = await turnNumberFor($, sessionId, e.turnId)
+      turnRecord.turn = turn
       await recallForTurn($, options, sessionId, turn, e.turnId, e.text, next.signal).catch(error => recordFailure($, 'recall', error))
     }
     return next(e)
@@ -530,9 +577,14 @@ export const register: Register = (on, options) => {
     if (isEdit) await noteFileBeforeEdit($, e as Record<string, unknown>)
     const ran = await next(e)
     const checkCommand = ran.deny === undefined ? checkCommandOf(e) : null
-    if (checkCommand) turnRecord.checks.push({ command: checkCommand.slice(0, 200), label: checkLabelOf(e), failed: verificationFailed(ran) })
+    if (checkCommand) {
+      const failed = verificationFailed(ran)
+      turnRecord.checks.push({ command: checkCommand.slice(0, 200), label: checkLabelOf(e), failed })
+      if (failed && e.agentId === undefined) return withStuckRecall($, options, ran)
+    }
     if (!isEdit || ran.deny !== undefined || ran.isError) return ran
     turnRecord.changedLines += changedLinesOf(e)
+    turnRecord.addedIdentifiers.push(...addedIdentifiersOf(e))
     noteEditedFile(e as Record<string, unknown>)
     return ran
   }).catch(($, e, next) => next(e))
